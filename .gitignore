@@ -1,0 +1,6 @@
+tmp.py
+*.csv
+x64
+venv
+__pycache__
+CapitalLog
