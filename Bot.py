@@ -14,6 +14,7 @@ class SignalManager(QObject):
     data_sig = pyqtSignal(str, int)
     dc_sig = pyqtSignal()
     order_sig = pyqtSignal()
+    close_all_sig = pyqtSignal()
 
     _instance = None
     
@@ -28,13 +29,18 @@ class SignalManager(QObject):
             raise Exception("This class is a singleton!")
         super().__init__()
 
-Klines = np.empty((0, 6))
+Klines = np.empty((0, 6)) 
 acclist = {}
 accinfo = []
-tmpK = np.empty((0,8))  # "Open","High","Low","Close","Volume"
-status=-1               # download is 1, dc is 2, ready is 3
+vwap=[0, 0] # normal vwap & potential big order vwap (minute wise or order wise), anchor with 8:45, 13:45
+priceVol = {}
+position = []
+sl=0
+tmpK = np.empty((0,9),dtype=object)#np.pad(np.loadtxt("TX_Ticktmp.csv",delimiter=',', dtype=object),((0,0),(0,1)),constant_values=-1)  # daily 1 min klines
+status=-1   # download is 1, dc is 2, ready is 3
 ID = ""
 
+#多空差額 大單買賣力(Accumulate) 筆數, volum profile 
 class SKReplyLibEvent(QObject):
     def __init__(self):
         super().__init__()
@@ -64,26 +70,38 @@ class SKQuoteLibEvent(QObject):
         self.signals.log_sig.emit(msg)
         print(msg)
         if status==2 or status==33:
-            time.sleep(300)
             self.signals.dc_sig.emit()
         #     print("done")
 
     def OnNotifyServerTime(self, sHour, sMinute, sSecond, nTotal): 
         global tmpK,df
+        tf=15
         if sSecond or sMinute%5!=0:
             return
-        if len(tmpK)==1 and (tmpK[0][-2:]!=[sMinute//15,sHour]).any():
-            # update K and TA
-            tmp = pd.DataFrame(np.delete(tmpK,[-2,-1],1),columns=df.reset_index().columns).set_index("Time")
-            tmpK = np.empty((0,8))
-            df = pd.concat([df, tmp[~tmp.index.isin(df.index)]]).sort_index()
-            self.signals.order_sig.emit()
+        elif sMinute%tf==0:
+            # if build 15 min from here sMinute=15 0~14, 30 15~29, 45 30~44, 0 45~59 
+            if tmpK.size and tmpK[-1][-1]//tf==(sMinute-1)%60//tf:
+                tmpK[-1][-1]=(tmpK[-1][-1]+15)%60
+                np.savetxt("TX_Ticktmp.csv", tmpK[:, :-1], delimiter=',', fmt='%s', header='Time,Open,High,Low,Close,Volume,LongQty,ShortQty')
+                tmp = pd.DataFrame(tmpK[:, :-1],columns=["Time","Open","High","Low","Close","Volume","LongQty","ShortQty"]).set_index("Time").resample('15min',closed='right',label='right').agg({
+                    'Open':'first',
+                    'High':'max',
+                    'Low' :'min',
+                    'Close':'last',
+                    'Volume':'sum',
+                    'LongQty': 'sum',
+                    'ShortQty': 'sum',
+                }).dropna()
+                df = pd.concat([df[~df.index.isin(tmp.index)], tmp],join="inner").sort_index()
+                print(tmpK[-1])
+                self.signals.order_sig.emit()
+
         msg = "【ServerTime】" + f"{sHour:02}" + ":" + f"{sMinute:02}" + ":" + f"{sSecond:02}"
         print(msg)
 
     def OnNotifyKLineData(self, bstrStockNo, bstrData):
         global Klines
-        msg = "【OnNotifyKLineData】" + bstrStockNo + "_" + bstrData 
+        # msg = "【OnNotifyKLineData】" + bstrStockNo + "_" + bstrData 
         data = bstrData.split(',')
         Klines = np.vstack([Klines, data])
 
@@ -91,56 +109,75 @@ class SKQuoteLibEvent(QObject):
         global tmpK, df
         if nSimulate:
             return
-        nClose=nClose/100
+        # 主動買賣多空比(大戶,散戶)
+        nClose=np.int32(nClose//100)
+        nBid=nBid//100
+        nAsk=nAsk//100
         nTimehms=str(f'{nTimehms:06}')
         time = nTimehms[:2]+':'+nTimehms[2:4]+':'+nTimehms[4:]
-        idx = [int(nTimehms[2:])//1500, int(nTimehms[:2])]  #0~1459 idx:1   idx:2 1500~2959   idx:3 3000~4459   idx:0 4500~5959  
-        
-        # ToDo put this in other place
-        if len(tmpK)>1:
-            # update K and TA
-            tmp = pd.DataFrame(np.delete(tmpK[:-1],[-2,-1],1),columns=df.reset_index().columns).set_index("Time")
-            tmpK = tmpK[-1:]
-            df = pd.concat([df, tmp[~tmp.index.isin(df.index)]]).sort_index()
-            self.signals.order_sig.emit()
+        idx = [int(nTimehms[2:])//100, int(nTimehms[:2])]
 
-        if not tmpK.size or (tmpK[-1][-2:]!=idx).any():
-            m = (idx[0]+1)%4*15
+        if tmpK.size==0 or tmpK[-1][-1]!=idx[0]:
+            m = (idx[0]+1)%60 
             h = idx[1] if m else (idx[1]+1)%24
-            tmp = [datetime.datetime.strptime(f"{nDate}",'%Y%m%d').replace(hour=h,minute=m),
-                   nClose,nClose,nClose,nClose,nQty, idx[0], idx[1]]
+            tmp = [pd.to_datetime(f"{nDate}",format='%Y%m%d').replace(hour=h,minute=m),
+                   nClose,nClose,nClose,nClose,np.int32(nQty), np.int32(0), np.int32(0), idx[0]]
             if idx[1]==23 and not m:
-                tmp[0] += datetime.timedelta(days=1)
+                tmp[0] += pd.Timedelta(days=1)
             tmpK = np.vstack([tmpK, tmp]) # Date and time
+            print(tmpK[-2][0].time(), tmpK[-2][1:-1])
+
+            if tmpK[-2][-1]//15!=idx[0]//15:
+                np.savetxt("TX_Ticktmp.csv", tmpK[:-1, :-1], delimiter=',', fmt='%s', header='Time,Open,High,Low,Close,Volume,LongQty,ShortQty')
+                tmp = pd.DataFrame(tmpK[:-1, :-1],columns=["Time","Open","High","Low","Close","Volume","LongQty","ShortQty"]).set_index("Time").resample('15min',closed='right',label='right').agg({
+                    'Open':'first',
+                    'High':'max',
+                    'Low':'min',
+                    'Close':'last',
+                    'Volume':'sum',
+                    'LongQty': 'sum',
+                    'ShortQty': 'sum',
+                }).dropna()
+                df = pd.concat([df[~df.index.isin(tmp.index)], tmp],join='inner').sort_index()
+                self.signals.order_sig.emit()
         else: 
             tmpK[-1][2]=max(tmpK[-1][2], nClose)
             tmpK[-1][3]=min(tmpK[-1][3], nClose)
             tmpK[-1][4]=nClose
             tmpK[-1][5]+=nQty
-
+        # StopLoss
+        if position and sl:
+            if position[-1][1]=='S' and nClose>=sl:
+                self.signals.close_all_sig.emit()
+            elif position[-1][1]=='B' and nClose<=sl:
+                self.signals.close_all_sig.emit()
         side = 0
         if nClose>=nAsk:
             side = 1
+            tmpK[-1][-3]+=nQty #long
             # print("\x1b[1;92m",end="")
         elif nClose<=nBid:
             side = -1
+            tmpK[-1][-2]+=nQty #short
             # print("\x1b[1;91m",end="")
-        self.signals.data_sig.emit(f"【Tick】Time:{time} Bid:{(nBid/100)} Ask:{(nAsk/100)} Strike:{(nClose)} Qty:{nQty}", side)
+        self.signals.data_sig.emit(f"【Tick】Time:{time} Bid:{nBid} Ask:{nAsk} Strike:{(nClose)} Qty:{nQty}", side)
     
     def OnNotifyHistoryTicksLONG(self, sMarketNo, nIndex, nPtr, nDate, nTimehms, nTimemillismicros, nBid, nAsk, nClose, nQty, nSimulate):
         global tmpK
         if nSimulate:
             return
-        # Recreate 15 mins Klines
-        nClose = nClose/100
+        # 主動買賣多空比(大戶,散戶)
+        nClose = np.int32(nClose//100)
+        nBid = nBid//100
+        nAsk = nAsk//100
         nTimehms = str(f'{nTimehms:06}')
-        idx = [int(nTimehms[2:])//1500, int(nTimehms[:2])]  #0~1459 idx:1   idx:2 1500~2959   idx:3 3000~4459   idx:0 4500~5959 
+        idx = [int(nTimehms[2:])//100, int(nTimehms[:2])] 
         
-        if not tmpK.size or (tmpK[-1][-2:]!=idx).any():
-            m = (idx[0]+1)%4*15 
+        if tmpK.size==0 or tmpK[-1][-1]!=idx[0]:
+            m = (idx[0]+1)%60
             h = idx[1] if m else (idx[1]+1)%24
-            tmp = [datetime.datetime.strptime(f"{nDate}",'%Y%m%d').replace(hour=h,minute=m),
-                   nClose,nClose,nClose,nClose,nQty, idx[0], idx[1]]
+            tmp = [pd.to_datetime(f"{nDate}",format='%Y%m%d').replace(hour=h,minute=m),
+                   nClose,nClose,nClose,nClose,np.int32(nQty), np.int32(0), np.int32(0), idx[0]]
             if idx[1]==23 and not m:
                 tmp[0] += datetime.timedelta(days=1)
             tmpK = np.vstack([tmpK, tmp]) # Date and time
@@ -149,6 +186,16 @@ class SKQuoteLibEvent(QObject):
             tmpK[-1][3]=min(tmpK[-1][3], nClose)
             tmpK[-1][4]=nClose
             tmpK[-1][5]+=nQty
+
+        side=0
+        if nClose>=nAsk:
+            tmpK[-1][-3]+=nQty
+            # print("\x1b[1;92m",end="")
+        elif nClose<=nBid:
+            tmpK[-1][-2]+=nQty
+            # print("\x1b[1;91m",end="")
+        # self.signals.data_sig.emit(f"【Tick】Time:{time} Bid:{(nBid/100)} Ask:{(nAsk/100)} Strike:{(nClose)} Qty:{nQty}", side)
+
 
 class SKOrderLibEvent(QObject):
     def __init__(self, skC) -> None:
@@ -175,10 +222,15 @@ class SKOrderLibEvent(QObject):
         msg = "【OnAsyncOrder】" + str(nThreadID)+ ", "+ str(nCode) +", "+ bstrMessage
         print(msg)
     def OnOpenInterest(self, bstrData):
+        global position
         if bstrData[0]=='#':
             return
-        msg = "【OnOpenInterest】" + bstrData
-        print(msg) 
+        data = bstrData.split(',')[2:7]
+        if not data:
+            return
+        position.append(data)
+        print(position)
+
     # 國內期貨權益數。透過呼叫 GetFutureRights 後，資訊由該事件回傳
     def OnFutureRights(self, bstrData):
         global accinfo
@@ -234,6 +286,7 @@ class TradingBot(QObject):
 
         self.signals.dc_sig.connect(self.init)
         self.signals.order_sig.connect(self.placeOrder)
+        self.signals.close_all_sig.connect(self.close_all)
         self.init()
 
     def login(self, acc, passwd):
@@ -246,70 +299,63 @@ class TradingBot(QObject):
         return nCode
     
     def init(self):
-        # This function should recreate Klines and basic TA such as EMA and MACD
-        # ToDo vwap refresh at 9 AM less than 9 means yesterday greater means today
-        # if current time<9 we need history K 9~14 and history T 15~now
-        # else if (9~23) two cases <15 histoty K 9~14 and 
-        # EMA 78,176 MACD(75,111,9) 
-        global df, acclist
-        self.order_init()  
+        global df, acclist, tmpK
         self.quoteConnect()
+        self.order_init()  
 
         df = self.requestKlines("TX00")
-        # ToDo separate strategy environment 3m, 15m 
         self.subtick("TX00")
+        # ToDo separate strategy environment 3m, 15m 
 
         # self.skO.GetStopLossReport(ID,acclist["TF"],0)
-        # ma1 = print(talib.EMA(df["Close"], 78))
-        # ma2 = print(talib.EMA(df["Close"], 176))
 
         # print(talib.MACD(df["Close"],))
-        # self.placeOrder(0,0)
-
+        if tmpK.size:
+            t = np.flip(tmpK, axis=0) 
+            _, j = np.unique(t[:,0],return_index=True)
+            tmpK = t[j]
         print("Data initialization finished!")
 
     def quoteConnect(self):
         global status
         self.signals.dc_sig.disconnect(self.init)
-
         while status!=3:
             nCode = self.skQ.SKQuoteLib_EnterMonitorLONG()
             msg = "【Quote_Connect】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
             self.signals.log_sig.emit(msg)
-            self.signals.log_sig.emit("Downloading Data...")
+            # self.signals.log_sig.emit("Downloading Data...")
             cnt=0
             while status<=2:
                 cnt+=1
                 time.sleep(0.1)
-                if cnt>300:
-                    self.signals.log_sig.emit("Time Out! Failed to connect.")
+                if cnt>150:
                     self.quoteDC()
-                    time.sleep(6)
+                    self.signals.log_sig.emit("Time Out! Failed to connect. Retry after 45s")
+                    time.sleep(45)
                     break
         self.signals.dc_sig.connect(self.init)            
         
             
     def subtick(self, stockNo: str):
         # 8 o'clock
+        global tmpK
         if status!=3:
             self.quoteConnect()
         psPageNo, nCode = self.skQ.SKQuoteLib_RequestTicks(-1, stockNo)
         msg = "【SubscribeTicks】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
         self.signals.log_sig.emit(msg)
-        try:
-            while True:
-                time.sleep(0.3)
-                if nCode==0:
-                    break
-        except KeyboardInterrupt:            
-            raise
-        # tmp=pd.DataFrame(tickdata,columns=["Time","Bid","Ask","Strike","Qty"])
-        # tmp.to_csv(f"{stockNo}_Tick.csv")
-        # if subscribe multiple product data process needs separate from index 
+        # try:
+        #     while True:
+        #         time.sleep(0.3)
+        #         if nCode==0:
+        #             break
+        # except KeyboardInterrupt:
+        #     raise
 
     def requestKlines(self, stockNo: str):
         global Klines
         Klines = np.empty((0, 6))
+
         # 4k data per call
         if status!=3:
             self.quoteConnect()
@@ -318,17 +364,16 @@ class TradingBot(QObject):
         nCode = self.skQ.SKQuoteLib_RequestKLineAMByDate(stockNo,0,1,0,since.strftime("%Y%m%d"),now.strftime("%Y%m%d"),15)
         msg = "【RequestKLine】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
         self.signals.log_sig.emit(msg)        
-        try:
-            while True:
-                time.sleep(0.3)
-                if nCode==0:
-                    break
-        except KeyboardInterrupt:            
-            raise
-        df = pd.DataFrame(Klines,columns=["Time","Open","High","Low","Close","Volume"]).set_index("Time").astype({"Open":float,"High":float,"Low":float,"Close":float})
+        # try:
+        #     while True:
+        #         time.sleep(0.3)
+        #         if nCode==0:
+        #             break
+        # except KeyboardInterrupt:            
+        #     raise
+        df = pd.DataFrame(Klines,columns=["Time","Open","High","Low","Close","Volume"]).set_index("Time").astype(float).astype(int)
         df.index = pd.to_datetime(df.index)
-        # df['EMA_78'] = df['Close'].ewm(span=78,adjust=False).mean().round().astype(int)
-        # print(df)
+
         df.to_csv(f"{stockNo}.csv")
         return df.tail(900)
         
@@ -364,7 +409,8 @@ class TradingBot(QObject):
         # self.signals.log_sig.emit(msg)
     
     def getInfo(self):
-        global ID, acclist
+        global ID, acclist, position
+        position=[]
         nCode = self.skO.GetOpenInterestGW(ID,acclist["TF"],1)
         msg="【GetOpenInterest】"+self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
         # self.signals.log_sig.emit(msg)
@@ -374,70 +420,133 @@ class TradingBot(QObject):
         print(msg)
 
     def placeOrder(self):
-        global df, accinfo
-        print(df)
-        ema1 = talib.EMA(df["Close"], 35)[-2:].values 
-        ema2 = talib.EMA(df['Close'], 225)[-2:].values 
-        macd, macd_sig, macd_hist = talib.MACD(df["Close"], 75, 90, 9)#75,90 80,95
+        global df, accinfo, sl, position
+        print(df.tail(6))
+        ma1 = talib.KAMA(df["Close"], 70)[-2:].values 
+        ma2 = talib.EMA(df['Close'], 195)[-2:].values 
+        macd, macd_sig, macd_hist = talib.MACD(df["Close"], 55, 150, 6)
         macd_hist = macd_hist[-2:].values
-        print(ema1)
-        print(ema2)
+        macd = macd[-2:].values
+        high_percentile = pd.Series(macd[-150:]).quantile(.7)
+        low_percentile = pd.Series(macd[-150:]).quantile(.3)
+        print(ma1)
+        print(ma2)
         print(macd_hist)
+        if position:
+            atr = talib.ATR(df['High'],df['Low'],df['Close'],30).iloc[-1]
+            if position[-1][1]=='S':
+                sl = min(sl or 999999, df.iloc[-1]['Close']+6*atr)
+            else:
+                sl = max(sl or 0, df.iloc[-1]['Close']-6*atr)
+            sl = int(sl)
+            print("StopLoss:", sl)
+
+
+        if int(accinfo[0])<20000:
+            self.signals.log_sig.emit("Insufficient funds.")
+            return
+        return
+        vola = False        # side way filter
 
         side=qty=-1
-        if ema1[0]>ema2[0] and ema1[1]<ema2[1]:
+        if ma1[0]>=ma2[0] and ma1[1]<ma2[1]:
             # close and short
-            qty= 2 if accinfo[0]!=accinfo[1] else 1
-            side = 1
-        elif ema1[0]<ema2[0] and ema1[1]>ema2[1]:
+            qty=0
+            if position[-1][1]=='B': #close
+                qty+=1   
+                sl=0
+                side = 1
+            if vola and macd_hist[1]<0:
+                qty+=1
+                sl = ma1[-1]
+                side = 1
+        elif ma1[0]<=ma2[0] and ma1[1]>ma2[1]:
             # close and long
-            qty= 2 if accinfo[0]!=accinfo[1] else 1
-            side = 0            
-        elif macd_hist[0]<0 and macd_hist[1]>0:
-            if (accinfo[0]!=accinfo[1] and ema1[1]<ema2[1]):
+            qty=0
+            if position[-1][1]=='S':
+                qty+=1  #close
+                sl=0
+                side = 0
+            if vola and macd_hist[1]>0:
+                qty+=1
+                sl = ma1[-1]
+                side = 0            
+        elif macd_hist[0]<0.15 and macd_hist[1]>0.15:
+            if (sl and ma1[1]<ma2[1]):
                 # close short
                 qty = 1
                 side = 0
-            elif (accinfo[0]==accinfo[1] and ema1[1]>ema2[1]):
+                sl=0
+            elif not sl and ma1[1]>ma2[1] and macd[-1]<low_percentile:
                 # open long
                 qty=1
                 side = 0
-        elif macd_hist[0]>0 and macd_hist[1]<0:
-            if (accinfo[0]!=accinfo[1] and ema1[1]>ema2[1]):
+                sl=ma1[-1]
+        elif macd_hist[0]>-0.3 and macd_hist[1]<-0.3:
+            if (sl and ma1[1]>ma2[1]):
                 # close long
                 qty = 1
                 side = 1
-            elif (accinfo[0]==accinfo[1] and ema1[1]<ema2[1]):
+                sl=0
+            elif not sl and ma1[1]<ma2[1] and macd[-1]>high_percentile:
                 # open short
                 qty = 1
                 side = 1
-
-        self.getInfo()
+                sl=ma1[-1]
 
         if side<0 or qty<0:
-            return
-        
-        self.signals.log_sig.emit(f"order triggered!")
-        if int(accinfo[0])<20000:
-            self.signals.log_sig.emit("Insufficient funds.")
+            print(f"Debug: {side}, {qty}")
+            self.getInfo()
             return
         
         order = sk.FUTUREORDER()
         order.bstrFullAccount = acclist["TF"]
         # TM0000
-        order.bstrStockNo = "MTX00"
+        order.bstrStockNo = "TM0000" #"MTX00"
         # 0:ROD  1:IOC  2:FOK
         order.sTradeType = 1
         # 0: buy 1: sell
         order.sBuySell = side
         order.sDayTrade = 0
-        # 0: open position 1: close position
+        # 0:open 1:close 2:auto
         order.sNewClose = 2
         order.bstrPrice = "P"
         order.nQty = qty
         order.sReserved = 0
 
         self.skO.SendFutureOrderCLR(ID, 1, order)
+        self.signals.log_sig.emit(f"Order Sent!")
+        self.getInfo()
+
+
+    def close_all(self):
+        if not position:
+            print("No postition to close!(Bug)")
+            return
+        global sl
+        if position[-1][1]=='S':
+            side = 0
+        else:
+            side = 1
+        sl = 0
+        order = sk.FUTUREORDER()
+        order.bstrFullAccount = acclist["TF"]
+        # TM0000
+        order.bstrStockNo = "TM0000" #"MTX00"
+        # 0:ROD  1:IOC  2:FOK
+        order.sTradeType = 1
+        # 0: buy 1: sell
+        order.sBuySell = side
+        order.sDayTrade = 0
+        # 0:open 1:close 2:auto
+        order.sNewClose = 2
+        order.bstrPrice = "P"
+        order.nQty = 1
+        order.sReserved = 0
+
+        self.skO.SendFutureOrderCLR(ID, 1, order)
+
+        self.signals.log_sig.emit(f"Stop Loss Order Sent!")
 
     def update_debug(self):
         nCode = self.skC.SKCenterLib_Debug(self.debug_state)
@@ -450,3 +559,14 @@ class TradingBot(QObject):
         nCode = self.skQ.SKQuoteLib_LeaveMonitor()
         msg = "【Quote_DC】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
         self.signals.log_sig.emit(msg)
+
+    def saveData(self):
+        global tmpK
+        if tmpK.size:
+            print("Saving min data...")
+            t1 = pd.read_csv("TX_Tick.csv",parse_dates=['Time'], dtype=np.int32)
+
+            t = np.flip(tmpK, axis=0) 
+            _, j = np.unique(t[:,0],return_index=True)
+            tmpK = t[j]
+            pd.concat([t1[~t1['Time'].isin(tmpK[:,0])], pd.DataFrame(tmpK[:,:-1],columns=t1.columns)]).set_index('Time').to_csv("TX_Tick.csv")
