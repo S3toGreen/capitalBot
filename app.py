@@ -1,10 +1,70 @@
-from dev import TradingBot, SignalManager
+from Bot import TradingBot, SignalManager
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
+import pyqtgraph as pg
+import numpy as np
+import Config
+
+
 import sys
 
 ANSI_COLOR={-1:QColorConstants.Red,1:QColorConstants.Green,0:QColorConstants.White}
+
+
+class VP(pg.PlotWidget):
+    def __init__(self, parent=None, background='default', plotItem=None, **kargs):
+        super().__init__(parent, background, plotItem, **kargs)
+        self.showGrid(x=True,y=True,alpha=.15)
+        self.setMouseEnabled(x=False,y=True)
+        self.setLimits(xMin=0)
+        # self.plot_bars()
+
+        self.vol_data = {23200:[150,200],23211:[6,9],23220:[100,90]}
+        self.timer=QTimer()
+        self.timer.timeout.connect(self.update)
+        self.timer.start(150)
+
+    def plot_bars(self):
+        prices = sorted(self.vol_data.keys())
+        b_vol = [self.vol_data[p][0] for p in prices]
+        s_vol = [self.vol_data[p][1] for p in prices]
+
+        s_bars = pg.BarGraphItem(x0=0, y=prices, height=0.4,width=s_vol,brush='r')
+        b_bars = pg.BarGraphItem(x0=s_vol, y=prices, height=0.4,width=b_vol,brush='g')
+        self.addItem(s_bars)
+        self.addItem(b_bars)
+
+    def update(self):
+        prices = list(self.vol_data)
+        # i = np.random.randint(0,len(prices))
+        # t = np.random.randint(-1,2)
+        # if prices[i]+t not in prices:
+        #     self.vol_data[prices[i]+t]=[0,0]
+        # self.vol_data[prices[i]+t][np.random.randint(0,2)]+=np.random.randint(1,4)
+        self.clear()
+        self.plot_bars()
+
+
+class VolumeVisualize(QTabWidget):
+    def __init__(self,parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Volume Profile")
+        self.setFixedSize(400, 900)
+        self.setWindowFlags(Qt.WindowType.Dialog)
+        self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+        
+        self.tab1 = QWidget()
+        self.addTab(self.tab1, "Simple")
+        self.tab2 = QWidget()
+        self.addTab(self.tab2, "Order wise")
+        self.tab3 = QWidget()
+        self.addTab(self.tab3, "Minute wise")
+        
+        layout1 = QVBoxLayout()
+        layout1.addWidget(VP())
+        self.tab1.setLayout(layout1)
+
 
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
@@ -20,6 +80,8 @@ class MainWindow(QMainWindow):
 
         self.worker.moveToThread(self.threads)
         self.threads.started.connect(self.worker.run)
+        self.volprof = VolumeVisualize(self)
+
 
     def init_ui(self):
         self.setWindowTitle("My App")
@@ -42,9 +104,9 @@ class MainWindow(QMainWindow):
         self.form.addRow(self.debug)
         self.debug.checkStateChanged.connect(self.debug_trig)
         layout.addLayout(self.form,1)
-        id.setText("H125488697")
+        id.setText(Config.id)
         id.returnPressed.connect(self.run_init)
-        passwd.setText("Seto927098")
+        passwd.setText(Config.passwd)
         passwd.returnPressed.connect(self.run_init)
         # Logging
         self.msg1 = QPlainTextEdit()
@@ -70,7 +132,6 @@ class MainWindow(QMainWindow):
         layout3.addLayout(layout,1)
 
         status = QStatusBar()
-        status.showMessage("info:")
 
         container = QWidget()
         container.setLayout(layout3)
@@ -105,6 +166,17 @@ class MainWindow(QMainWindow):
             return
         self.debug.setDisabled(True)
         self.threads.start()
+
+    def closeEvent(self, a0):
+        self.worker.saveData()
+        # if self.volprof:
+        #     self.volprof.close()
+        return super().closeEvent(a0)
+    
+    def show(self):
+        self.volprof.show()
+        self.volprof.move(self.x()+1200,self.volprof.y())
+        return super().show()
 
 if __name__=='__main__':
     app = QApplication([])
