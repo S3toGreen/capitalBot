@@ -1,4 +1,5 @@
-from Bot import TickReceiver, SignalManager
+from Bot import Broker
+from SignalManager import SignalManager
 from PySide6.QtWidgets import *
 from PySide6.QtCore import *
 from PySide6.QtGui import *
@@ -6,9 +7,11 @@ import pyqtgraph as pg
 import numpy as np
 import Config
 import sys
-from windows_toasts import WindowsToaster, Toast, ToastScenario
 from sortedcontainers import SortedDict
 from Profile import VolumeVisualize
+from watchlist import WatchList
+import faulthandler
+faulthandler.enable()
 
 pg.setConfigOptions(useOpenGL=True)
 
@@ -20,20 +23,21 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.init_ui()
 
-        self.threads = QThread()
-        self.worker = TickReceiver()
+        self.tickers = QThread()
+        self.worker = Broker()
 
         self.signals = SignalManager.get_instance()
         self.signals.log_sig.connect(self.log_handler)
         self.signals.data_sig.connect(self.data_handler)
 
-        self.worker.moveToThread(self.threads)
-        self.threads.started.connect(self.worker.run)
-        self.volprof = VolumeVisualize(self)
+        self.worker.moveToThread(self.tickers)
+        self.tickers.started.connect(self.worker.run)
+        # self.volprof = VolumeVisualize(self)
+        self.watchlist = WatchList(self)
 
     def init_ui(self):
         self.setWindowTitle("My App")
-        self.resize(800,600)
+        self.resize(600,600)
         layout = QHBoxLayout()
         layout.setSpacing(15)
 
@@ -56,6 +60,7 @@ class MainWindow(QMainWindow):
         id.returnPressed.connect(self.run_init)
         passwd.setText(Config.passwd)
         passwd.returnPressed.connect(self.run_init)
+        
         # Logging
         self.msg1 = QPlainTextEdit()
         self.msg1.setReadOnly(True)
@@ -63,7 +68,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.msg1,3)
         
         layout3 = QVBoxLayout()
-        layout3.setContentsMargins(30,15,30,15)
+        layout3.setContentsMargins(15,15,15,0)
         layout3.setSpacing(15)
         layout3.addLayout(layout)
 
@@ -113,19 +118,21 @@ class MainWindow(QMainWindow):
         if res:
             return
         self.debug.setDisabled(True)
-        self.threads.start()
+        self.tickers.start()
 
     def closeEvent(self, a0):
         self.worker.saveData()
-        self.threads.quit()
-        self.threads.wait()
+        self.tickers.quit()
+        self.tickers.wait()
         # if self.volprof:
         #     self.volprof.close()
         return super().closeEvent(a0)
     
     def show(self):
-        self.volprof.show()
-        self.volprof.move(self.x()+1200,self.volprof.y())
+        # self.volprof.show()
+        # self.volprof.move(self.x()+1200,self.volprof.y())
+        self.watchlist.show()
+        self.watchlist.move(self.x()+600,self.watchlist.y())
         return super().show()
 
 if __name__=='__main__':
