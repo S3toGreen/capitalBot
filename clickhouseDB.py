@@ -25,18 +25,18 @@ PARTITION BY toYYYYMMDD(time)
 ORDER BY (symbol, time)
 SETTINGS index_granularity = 8192, compress_primary_key=1;
 
-CREATE TABLE orderflow
+CREATE TABLE orderflowOS
 (
-    time        DateTime CODEC(DoubleDelta,ZSTD(3)),    -- Aggregated time window
+    time        DateTime('America/Chicago') CODEC(DoubleDelta,ZSTD(3)),    -- Aggregated time window
     symbol      LowCardinality(String) CODEC(LZ4),  -- Instrument name (e.g., ES, BTCUSDT)
     open        Float32 CODEC(Delta, ZSTD(3)),          -- First price in the footprint
     high        Float32 CODEC(Delta, ZSTD(3)),          -- Highest price in the footprint
     low         Float32 CODEC(Delta, ZSTD(3)),          -- Lowest price in the footprint
     close       Float32 CODEC(Delta, ZSTD(3)),          -- Last price in the footprint
     volume      UInt32 CODEC(T64, LZ4),                 -- Total traded volume
-    delta       Int32 CODEC(T64, LZ4),
+    delta       Tuple(Int32, Int32, Int32) CODEC(Delta, ZSTD(3)),
     trades_delta Int32 CODEC(T64, LZ4),
-    price_map   Map(Float32, Tuple(UInt32, Int32, Int32)) CODEC(ZSTD(3)), -- Pice level and (volume,delta)
+    price_map   Array(Tuple(Float32,UInt32, Int32, Int32)) CODEC(Delta,ZSTD(3)), -- Pice level and (volume,delta,tradesdelta)
     PRIMARY KEY (symbol, time)
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMMDD(time)
@@ -44,15 +44,24 @@ ORDER BY (symbol, time)
 TTL time + INTERVAL 30 DAY DELETE
 SETTINGS index_granularity = 8192, compress_primary_key=1;
 
-CREATE TABLE fp
+CREATE TABLE orderflowDM
 (
-    time              DateTime CODEC(DoubleDelta,ZSTD(3)),         -- Minute timestamp
-    symbol            LowCardinality(String) CODEC(LZ4), -- Asset symbol
+    time        DateTime('Asia/Taipei') CODEC(DoubleDelta,ZSTD(3)),    -- Aggregated time window
+    symbol      LowCardinality(String) CODEC(LZ4),  -- Instrument name (e.g., ES, BTCUSDT)
+    open        Float32 CODEC(Delta, ZSTD(3)),          -- First price in the footprint
+    high        Float32 CODEC(Delta, ZSTD(3)),          -- Highest price in the footprint
+    low         Float32 CODEC(Delta, ZSTD(3)),          -- Lowest price in the footprint
+    close       Float32 CODEC(Delta, ZSTD(3)),          -- Last price in the footprint
+    volume      UInt32 CODEC(T64, LZ4),                 -- Total traded volume
+    delta       Tuple(Int32, Int32, Int32) CODEC(Delta, ZSTD(3)), --(high, low, close)
+    trades_delta Int32 CODEC(T64, LZ4),                 
+    price_map   Array(Tuple(Float32, UInt32, Int32, Int32)) CODEC(Delta, ZSTD(3)), --(Pice level, volume, delta, tradesdelta)
     PRIMARY KEY (symbol, time)
 ) ENGINE = MergeTree()
-PARTITION BY toYYYYMM(time)
+PARTITION BY toYYYYMMDD(time)
 ORDER BY (symbol, time)
-SETTINGS index_granularity = 8192, compress_primary_key = 1;
+TTL time + INTERVAL 30 DAY DELETE
+SETTINGS index_granularity = 8192, compress_primary_key=1;
 
 CREATE TABLE daily_info
 (

@@ -29,7 +29,7 @@ function Loop(){
         await waitForElm("button[aria-label=儲存]").then((ele)=>ele.click());
         await waitForElm("#close-button [aria-label=關閉]").then((ele)=>ele.click());
         Loop();
-    }, 1500);
+    }, 600);
 }
 for(var b; b=document.querySelector("[aria-label=編輯草稿]");b!=null){
 document.querySelector("[aria-label=編輯草稿]").click();await waitForElm("#step-badge-3").then((ele)=>ele.click());await waitForElm("button[aria-label=儲存]").then((ele)=>ele.click());await waitForElm("#close-button [aria-label=關閉]").then((ele)=>ele.click())
