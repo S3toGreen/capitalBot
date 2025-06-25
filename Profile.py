@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import *
 from PySide6.QtCore import *
 from PySide6.QtGui import *
-from Bot import SignalManager
+from SignalManager import SignalManager
 import pyqtgraph as pg
 from windows_toasts import WindowsToaster, Toast, ToastScenario
 from copy import deepcopy

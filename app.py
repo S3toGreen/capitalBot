@@ -1,4 +1,4 @@
-from Bot import Broker
+from Broker import Broker
 from SignalManager import SignalManager
 from PySide6.QtWidgets import *
 from PySide6.QtCore import *
@@ -10,6 +10,7 @@ import sys
 from sortedcontainers import SortedDict
 from Profile import VolumeVisualize
 from watchlist import WatchList
+from windows_toasts import WindowsToaster, Toast, ToastScenario
 import faulthandler
 faulthandler.enable()
 
@@ -29,11 +30,14 @@ class MainWindow(QMainWindow):
         self.signals = SignalManager.get_instance()
         self.signals.log_sig.connect(self.log_handler)
         self.signals.data_sig.connect(self.data_handler)
+        self.signals.alert.connect(self.toast_alert)
 
         self.worker.moveToThread(self.tickers)
-        self.tickers.started.connect(self.worker.run)
+        self.tickers.started.connect(self.worker.init)
         # self.volprof = VolumeVisualize(self)
         self.watchlist = WatchList(self)
+        self.toaster=WindowsToaster('Trading App')
+        self.newToast = Toast(scenario=ToastScenario.Reminder,suppress_popup=False)
 
     def init_ui(self):
         self.setWindowTitle("My App")
@@ -108,6 +112,11 @@ class MainWindow(QMainWindow):
         if self.msg2.verticalScrollBar().value() >= (self.msg2.verticalScrollBar().maximum()-3):
             self.msg2.moveCursor(QTextCursor.MoveOperation.End)
             self.msg2.ensureCursorVisible()
+    @Slot(str,str)
+    def toast_alert(self, title, msg):
+        self.newToast.text_fields=[title,msg]
+        self.toaster.show_toast(self.newToast)
+        self.newToast = self.newToast.clone()
 
     def debug_trig(self):
         self.worker.debug_state=self.debug.isChecked()
@@ -133,6 +142,7 @@ class MainWindow(QMainWindow):
         # self.volprof.move(self.x()+1200,self.volprof.y())
         self.watchlist.show()
         self.watchlist.move(self.x()+600,self.watchlist.y())
+        
         return super().show()
 
 if __name__=='__main__':

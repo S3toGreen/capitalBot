@@ -5,9 +5,11 @@ import comtypes.client as cc
 import comtypes.gen.SKCOMLib as sk
 import numpy as np
 from SignalManager import SignalManager
-from DMQuoteThread import DomesticQuote
-from OSQuoteThread import OverseaQuote
+from quote.DMQuoteThread import DomesticQuote
+from quote.OSQuoteThread import OverseaQuote
 
+# Simulated trading or dry run
+# work flow send order to broker class  
 Klines = np.empty((0, 6)) 
 acclist = {}
 accinfo = [] # future right info
@@ -15,24 +17,31 @@ position = []
 footprint = np.empty((0, 2),dtype=object)  #{Timestamp:{price:[aggbuy, aggsell]}} or [[timestamp,{price:aggbuy, aggsell}]
 # sl=0
 tmpK = np.empty((0,9),dtype=object)#np.pad(np.loadtxt("TX_Ticktmp.csv",delimiter=',', dtype=object),((0,0),(0,1)),constant_values=-1)  # daily 1 min klines
-status=[-1,-1]   # download is 1, dc is 2, ready is 3
 
 class SKReplyLibEvent():
-    def __init__(self):
+    def __init__(self, skC):
         super().__init__()
         self.singals = SignalManager.get_instance()
+        self.skC=skC
+        self.status = -1
 
     def OnReplyMessage(self, bstrUserID, bstrMessages):
-        # time.sleep(15)
         msg = "【Announcement】" + bstrMessages
         self.singals.log_sig.emit(msg)
         return -1
+    def OnSolaceReplyConnection(self, bstrUserID, nCode):
+        msg = "【ReplyConnection】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
+        self.singals.log_sig.emit(msg)
+    def OnComplete(self, bstrUserID):
+        self.status = 1
     def OnStrategyData(self, bstrUserID, bstrData):
         msg = "【StrategyData】"+ bstrData
-        self.singals.log_sig.emit(msg)
+        # self.singals.log_sig.emit(msg)
+        print(msg)
     def OnNewData(self, bstrUserID, bstrData):
         msg = "【NewData】"+bstrData
-        self.singals.log_sig.emit(msg)
+        # self.singals.log_sig.emit(msg)
+        print(msg)
 
 class SKCenterLibEvent():
     def OnShowAgreement(self, bstrData):
@@ -86,14 +95,14 @@ class SKOrderLibEvent():
 class Broker(QObject): 
     def __init__(self, *args,**kwargs):
         super().__init__()
-        
-        self.skR = cc.CreateObject(sk.SKReplyLib,interface=sk.ISKReplyLib)
-        SKReplyEvent = SKReplyLibEvent()
-        self.SKReplyLibEventHandler = cc.GetEvents(self.skR, SKReplyEvent)
-        
+
         self.skC = cc.CreateObject(sk.SKCenterLib,interface=sk.ISKCenterLib)
         SKCenterEvent = SKCenterLibEvent()
         self.SKCenterLibEventHandler = cc.GetEvents(self.skC, SKCenterEvent)
+
+        self.skR = cc.CreateObject(sk.SKReplyLib,interface=sk.ISKReplyLib)
+        self.SKReplyEvent = SKReplyLibEvent(self.skC)
+        self.SKReplyLibEventHandler = cc.GetEvents(self.skR, self.SKReplyEvent)
 
         self.skO = cc.CreateObject(sk.SKOrderLib,interface=sk.ISKOrderLib)
         SKOrderEvent = SKOrderLibEvent(self.skC)
@@ -108,7 +117,7 @@ class Broker(QObject):
         self.domestic_worker.moveToThread(self.domestic_thread)
         self.oversea_worker.moveToThread(self.oversea_thread)
         self.domestic_thread.started.connect(self.domestic_worker.run)
-        # self.oversea_thread.started.connect(self.oversea_worker.run)
+        self.oversea_thread.started.connect(self.oversea_worker.run)
 
         nCode = self.skC.SKCenterLib_SetLogPath("CapitalLog")
 
@@ -119,13 +128,6 @@ class Broker(QObject):
         self.debug_state = False
         self.update_debug()
 
-    def run(self):
-        self.signals.order_sig.connect(self.placeOrder)
-        self.signals.close_all_sig.connect(self.close_all)
-        self.domestic_thread.start()
-        # self.oversea_thread.start()
-        self.init()
-
     def login(self, acc, passwd):
         nCode = self.skC.SKCenterLib_Login(acc, passwd)
         msg = "【Login】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
@@ -134,10 +136,21 @@ class Broker(QObject):
         self.signals.log_sig.emit(msg)
         return nCode
     
+    def run(self):
+        self.signals.order_sig.connect(self.placeOrder)
+        self.signals.close_all_sig.connect(self.close_all)
+        self.oversea_thread.start()
+        self.domestic_thread.start()
+
     def init(self):
-        global df, acclist, tmpK, footprint
+        self.domestic_worker.ready_sig.connect(self.ready)
         self.order_init()
-            
+        self.run()
+
+    @Slot()
+    def ready(self):
+        self.skR.SKReplyLib_ConnectByID(self.ID)
+
     def order_init(self):
         nCode = self.skO.SKOrderLib_Initialize()
         msg = "【OrderLib_Init】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
@@ -179,38 +192,14 @@ class Broker(QObject):
         # msg="【GetFutureRight】"+self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
         # print(msg)
 
-    def placeOrder(self):
-        global df, accinfo, sl, position, tmpK
-        tmp = pd.DataFrame(tmpK[:-1, :-1],columns=["Time","Open","High","Low","Close","Volume","aggBuy","aggSell"]).set_index("Time").resample('15min',closed='right',label='right').agg({
-            'Open':'first',
-            'High':'max',
-            'Low':'min',
-            'Close':'last',
-            'Volume':'sum',
-            'aggBuy': 'sum',
-            'aggSell': 'sum',
-        }).dropna()
-        df = pd.concat([df[~df.index.isin(tmp.index)], tmp],join='inner').sort_index()
-
-        print(df.tail(3))
-        typical_price = (tmpK[:,2]+tmpK[:,3]+tmpK[:,4])/3
-        vwap = np.average(typical_price,weights=tmpK[:,5])
-
-        print("VWAP:",vwap)
-        self.getInfo()
-
-        print(f'{"-"*60}')
-
-        if int(accinfo[0])<20000:
-            self.signals.log_sig.emit("Insufficient funds!")
-            return
-        
-        return
+    @Slot(str,int,int)
+    def placeOrder(self,symbol:str, side:int, price:int=None):
+        # TODO proxy order for faster execution
         
         order = sk.FUTUREORDER()
         order.bstrFullAccount = acclist["TF"]
         # TM0000
-        order.bstrStockNo = "TM0000" #"MTX00"
+        order.bstrStockNo = symbol #"MTX00"
         # 0:ROD  1:IOC  2:FOK
         order.sTradeType = 1
         # 0: buy 1: sell
@@ -218,11 +207,11 @@ class Broker(QObject):
         order.sDayTrade = 0
         # 0:open 1:close 2:auto
         order.sNewClose = 2
-        order.bstrPrice = "P"
-        order.nQty = qty
+        order.bstrPrice = price if price else "P"
+        order.nQty = 1
         order.sReserved = 0
 
-        self.skO.SendFutureOrderCLR(ID, 1, order)
+        self.skO.SendFutureOrderCLR(self.ID, 1, order)
         self.signals.log_sig.emit(f"Order Sent!")
         self.getInfo()
 
@@ -236,8 +225,8 @@ class Broker(QObject):
 
     def saveData(self):
         global tmpK,footprint
-        self.oversea_worker.cleanup()
         self.domestic_worker.cleanup()
+        self.oversea_worker.cleanup()
         self.oversea_thread.quit()
         self.domestic_thread.quit()
         self.domestic_thread.wait()
