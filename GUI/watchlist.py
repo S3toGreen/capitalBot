@@ -3,11 +3,15 @@ from PySide6.QtCore import *
 from PySide6.QtGui import *
 from collections import defaultdict
 from SignalManager import SignalManager
-
+TABLE_VIEW_STYLE = """
+QTableView {
+    alternate-background-color: #3c3c3c;
+}
+"""
 class QuoteModel(QAbstractTableModel):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._headers = ['Symbol','Price','Change','High','Low','Open','Vol','OI','連次','連量'] #VolRatio 連次連量
+        self._headers = ['Symbol','Price','Change','Vol','High','Low','OI','連次','連量'] #VolRatio(量比 similar 預估量) 連次連量
         self._data = [] 
         self._symbol_index = {}  # Map symbol to row index
         self._last_price = defaultdict(float)
@@ -62,25 +66,24 @@ class QuoteModel(QAbstractTableModel):
         return None
     
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
             return self._headers[section]
         return super().headerData(section, orientation, role)
 
-    def update_data(self, idx, data:dict):
-        #ToDo 
+    def update_data(self, data:dict):
         row_data = [
-            data.get('Symbol','None'),
-            data.get('Price') if data.get('Price') else data.get('Ref'),
-            data.get('Price',0)-data.get('Ref',0),
-            data.get('High',0),
-            data.get('Low',0),
-            data.get('Open',0),
+            data.get('Symbol',None),
+            data.get('C') if data.get('C') else data.get('Ref'),
+            data.get('C',0)-data.get('Ref',0),
             data.get('Vol',0),
+            data.get('H',0),
+            data.get('L',0),
+            # data.get('Open',0),
             data.get('OI'),
             data.get('CC'),
             data.get('CV')
         ]
-        
+        idx = data.get('ID')
         if idx in self._symbol_index:
             row = self._symbol_index[idx]
             old_price = self._data[row][1]
@@ -129,11 +132,12 @@ class OptionModel(QAbstractTableModel):
 class WatchList(QWidget):
     def __init__(self,parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Watch List")
-        self.resize(750, 900)
+        # self.setWindowTitle("Watch List")
+        # self.resize(750, 900)
+        self.setStyleSheet(TABLE_VIEW_STYLE)
         self.setWindowFlags(Qt.WindowType.Dialog)
         self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
-        self.signals = SignalManager.get_instance()
+        # self.signals = SignalManager.get_instance()
 
         layout = QVBoxLayout(self)
         tabwidget = QTabWidget()
@@ -148,7 +152,7 @@ class WatchList(QWidget):
         self.tab1.setModel(self.proxy_dm)
         self.tab1.setAlternatingRowColors(True)
         self.tab1.setSortingEnabled(True)
-        tabwidget.addTab(self.tab1, "Domestic")
+        tabwidget.addTab(self.tab1, "DM")
 
         self.model_os = QuoteModel()
         self.proxy_os = QSortFilterProxyModel()
@@ -159,7 +163,7 @@ class WatchList(QWidget):
         self.tab2.setModel(self.proxy_os)
         self.tab2.setAlternatingRowColors(True)
         self.tab2.setSortingEnabled(True)
-        tabwidget.addTab(self.tab2, "Oversea")
+        tabwidget.addTab(self.tab2, "OS")
 
         #options chain
         self.tab3=QWidget()
@@ -173,30 +177,27 @@ class WatchList(QWidget):
         layout.addWidget(self.option_combo)
         layout.addWidget(self.table)
         # self.tab3.resizeColumnsToContents()
-        tabwidget.addTab(self.tab3, "Option")
-
-        self.signals.quote_update.connect(self.quote_update)
+        tabwidget.addTab(self.tab3, "Options(ToBeDone)")
 
         self.tab1.verticalHeader().setVisible(False)
-        self.tab1.horizontalHeader().setMinimumSectionSize(90)
+        self.tab1.horizontalHeader().setMinimumSectionSize(75)
         self.tab1.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.tab2.verticalHeader().setVisible(False)
-        self.tab2.horizontalHeader().setMinimumSectionSize(90)
+        self.tab2.horizontalHeader().setMinimumSectionSize(75)
         self.tab2.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
     def show(self):
         super().show()
         self.table.horizontalScrollBar().setValue(1)
 
-    @Slot(str,dict,str)
-    def quote_update(self,idx,data:dict,market:str):
+    # @Slot(str,dict,str)
+    def quote_update(self,market:str,data:dict):
         match market:
             case 'DM':
-                self.model_dm.update_data(idx,data)
+                self.model_dm.update_data(data)
             case 'OS':
-                self.model_os.update_data(idx,data)
+                self.model_os.update_data(data)
             case _:
                 return
-
     def update_option(self, oplist:list):
 
         #TX1,TX2,TXO,TX3,TX4

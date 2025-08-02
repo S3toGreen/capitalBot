@@ -5,234 +5,230 @@ import comtypes.client as cc
 import comtypes.gen.SKCOMLib as sk
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 import asyncio, datetime
-from redisworker.Tick_Producer import TickProducer
-from redisworker.Async_Worker import AsyncRedisWorker
+from redisworker.Producer import DataProducer
+from redisworker.AsyncWorker import AsyncWorker
 from collections import defaultdict
 from numba import njit
 import pythoncom
 import ctypes
-from quote.tools import Bar
+from quote.tools import Tick, Bar
 
 @njit(cache=True, fastmath=True)
 def update_depth(dep, args):
     for i in range(5):
-        dep[0, i][0] = args[i * 2]/100        # bid price
-        dep[0, i][1] = args[i * 2 + 1]    # bid qty
-        dep[1, i][0] = args[12 + i * 2]/100   # ask price
+        dep[0, i][0] = args[i * 2]/100      # bid price
+        dep[0, i][1] = args[i * 2 + 1]      # bid qty
+        dep[1, i][0] = args[12 + i * 2]/100 # ask price
         dep[1, i][1] = args[12 + i * 2 + 1] # ask qty
 
 class SKQuoteLibEvent(QObject):
     reconn = Signal()
-    def __init__(self, skC, skQ, redis_worker, market='DM'):
+    def __init__(self, skC, skQ, worker, market='DM'):
         super().__init__()
         self.signals = SignalManager.get_instance()
         self.skC = skC
         self.skQ = skQ
+        self.producer= DataProducer.create(market, worker)
+
         self.stockid = {}
-        self.ptr = defaultdict(int)
+        self.ptr = {}
         self.last_ptr = {}
         self.status = -1 
-        self.redis_worker = redis_worker
-        self.producer= asyncio.run_coroutine_threadsafe(TickProducer.create(market),self.redis_worker.loop).result()
+        self.tick_buffer = defaultdict(list)
+
         self.orderflow = defaultdict(list)
-        self.market_dep = defaultdict(lambda: np.zeros((2,5),dtype=[('p', 'f4'), ('q', 'u2')]))
-        # --- PERFORMANCE OPTIMIZATIONS ---
+        self.market_dep = defaultdict(lambda: np.zeros((2,5), dtype=[('p', 'f4'), ('q', 'u2')]))
+
+        # Debounce timer
+        self.backfill_timer = QTimer(self)
+        self.backfill_timer.setSingleShot(True)
+        self.backfill_timer.setInterval(3000)
+        self.backfill_timer.timeout.connect(self._finalize_backfill)
+        # self.backfill_symbols = set()
+        self.live_timer = QTimer(self)
+        self.live_timer.setInterval(300)
+        self.live_timer.timeout.connect(self._live_tick)
+
+        #EOD detect
+        self.idle_timer = QTimer(singleShot=True)
+        self.idle_timer.setInterval(600000)
+        self.idle_timer.timeout.connect(self._EOD)
+        self.idle_timer.start()
+
         # Cache for date objects to avoid expensive parsing on every tick.
         self._cached_date = 0
         self._cached_today_dt = None
         self._tz = 'Asia/Taipei'
-        # --- END PERFORMANCE OPTIMIZATIONS ---
 
-    def _get_bar_time(self, nDate, nTime):
-        """
-        PERFORMANCE: Calculates bar timestamp using integer math and caching.
-        This avoids expensive string and datetime parsing in the hot path.
-        """
+    def _to_timestamp(self, nDate, nTime):
         if nDate != self._cached_date:
-            # Date has changed (e.g., midnight rollover), update the cached date object.
             self._cached_date = nDate
             self._cached_today_dt = pd.to_datetime(str(nDate), format='%Y%m%d').tz_localize(self._tz)
-        # Use integer arithmetic which is significantly faster than string conversion.
         hour = nTime // 10000
         minute = (nTime // 100) % 100
-        bar_time = self._cached_today_dt.replace(hour=hour, minute=minute) + pd.Timedelta(minutes=1)
-        return bar_time, hour, minute
+        sec = nTime%100
+        return self._cached_today_dt.replace(hour=hour, minute=minute, second=sec)
+
+    def _process_tick_buffer(self, publish_to_redis: bool = False):
+        if not self.tick_buffer:
+            return
+
+        # tmp_buf = {
+        #     symbol: ticks.copy()
+        #     for symbol, ticks in self.tick_buffer.items() if ticks
+        # }
+        # self.producer.insert_ticks(tmp_buf)
+
+        for symbol, ticks in self.tick_buffer.items():
+            if not ticks: continue
+            self.producer.ticks_buf[symbol].extend(ticks)
+            self._agg_tick(symbol, ticks)
+            if publish_to_redis:
+                self.producer.pub_ticks(symbol, ticks)
+            ticks.clear()
+
+    def _finalize_backfill(self):
+        self._process_tick_buffer()
+        self.live_timer.start()
     
+    def _live_tick(self):
+        self._process_tick_buffer(True)
+
+    def _agg_tick(self, symbol, ticks:list):
+        # TODO push the last bar EOD
+        ticks.sort(key=lambda t:t.ptr)
+        for t in ticks:
+            bar_time = t.time.floor('min') #+ pd.Timedelta(minutes=1)
+            minute_changed = not self.orderflow[symbol] or self.orderflow[symbol][-1].time != bar_time
+            last:Bar = None
+            if minute_changed:
+                self.producer.lastest_ptr[symbol] = t.ptr
+                tmp = Bar(bar_time, t.price, t.price, t.price, t.price, t.qty)
+                self.orderflow[symbol].append(tmp)
+                last = self.orderflow[symbol][-1]
+            else: 
+                last = self.orderflow[symbol][-1]
+                if t.price>last.high:
+                    last.high=t.price
+                elif t.price<last.low:
+                    last.low=t.price
+                last.close=t.price
+                last.vol+=t.qty
+
+            # last.price_map[t.price][0] += t.qty
+
+            last.delta_hlc[-1] += t.qty*t.side #close delta
+            last.trades_delta += t.side
+            # if t.side: # 1 aggb, -1 aggs, 0 neutral
+            last.price_map[t.price][t.side] += t.qty 
+                
+            if last.delta_hlc[-1]>last.delta_hlc[0]:
+                last.delta_hlc[0]=last.delta_hlc[-1]
+            elif last.delta_hlc[-1]<last.delta_hlc[1]:
+                last.delta_hlc[1]=last.delta_hlc[-1]
+
+        self.last_ptr[symbol] = ticks[-1].ptr+1
+        if len(self.orderflow[symbol])>1:
+            self.producer.push_bars(symbol, self.orderflow[symbol][:-1].copy())
+            self.orderflow[symbol]= [last]
+        # snapshot?
+        self.producer.pub_snap(symbol, last)
+
+    def _EOD(self):
+        for symbol, bars in self.orderflow.items():
+            if bars:
+                self.producer.lastest_ptr[symbol] = self.last_ptr[symbol]
+                self.producer.push_bars(symbol, bars)
+        self.orderflow.clear()
+        self.live_timer.stop()
+        self.producer.insert_ticks()
+        print("------DM MARKET CLOSED------")
+
     def fetch_ptr(self, stocklist:list[str]):
-        self.ptr = asyncio.run_coroutine_threadsafe(self.producer.get_ptr(stocklist), self.redis_worker.loop).result()
-    # def sync_ptr(self):
-    #     asyncio.run_coroutine_threadsafe(self.producer.update_lastest_ptr(),self.redis_worker.loop).result()
+        if not self.ptr:
+            self.ptr = self.producer.get_ptr(stocklist)
 
     def OnConnection(self, nKind, nCode): 
         status = nKind-3000
         msg = "【Connection】" + self.skC.SKCenterLib_GetReturnCodeMessage(nKind) + "_" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode) 
         self.signals.log_sig.emit(msg)
-        print(msg)
+        # print(msg) 
+        # closed of the market, accident disconnect
         if status in [2,33] and self.status==3:
-            self.orderflow.clear()
+            if self.last_ptr:
+                self.ptr = self.last_ptr.copy()
             self.reconn.emit()
         self.status = status
 
     def OnNotifyServerTime(self, sHour, sMinute, sSecond, nTotal): 
         if sSecond or sMinute%15:
             return
+        if sHour==5 and sMinute:
+            self.signals.OS_reset.emit()
+        if sHour==14:
+            if self.ptr:
+                self.ptr=defaultdict(int)
+                self.last_ptr.clear()
+                self.producer.insert_ticks()
+                if self.orderflow:
+                    print(f'ERROR orderflow data not pushed.\n{self.orderflow}')
+                else:
+                    print('Reset DM data')
+
         msg = "【ServerTime】" + f"{sHour:02}" + ":" + f"{sMinute:02}" + ":" + f"{sSecond:02}"
         print(msg)
-        self.signals.OS_store_sig.emit(sHour, sMinute)
-        if sHour==14:
-            for i in self.ptr.keys():
-                self.ptr[i]=0
-
-        for i in list(self.orderflow.keys()):
-            if not self.orderflow[i]:
-                continue
-            if sMinute+1==self.orderflow[i][-1].time.minute:
-                self.redis_worker.submit(self.producer.push_bars(i,self.orderflow[i][:-1].copy()))
-                self.orderflow[i]=self.orderflow[i][-1:]
-            else:
-                self.producer.lastest_ptr[i]=self.last_ptr[i]+1
-                self.redis_worker.submit(self.producer.push_bars(i,self.orderflow[i].copy()))
-                del self.orderflow[i]
         
     def OnNotifyKLineData(self, bstrStockNo, bstrData):
-        global Klines
-        msg = "【OnNotifyKLineData】" + bstrStockNo + "_" + bstrData 
-        data = bstrData.split(',')
+        pass
 
-    def OnNotifyTicksLONG(self, sMarketNo, nIndex, nPtr, nDate, nTimehms, nTimemillismicros, nBid, nAsk, nClose, nQty, nSimulate):
+    def OnNotifyTicksLONG(self, sMarketNo, nIndex, nPtr, nDate, nTime, nTimemillismicros, nBid, nAsk, nClose, nQty, nSimulate):
+        #TODO rust based
         if not (symbol:=self.stockid.get(nIndex)):
             pSKStock = sk.SKSTOCKLONG()
-            pSKStock, nCode= self.skQ.SKQuoteLib_GetStockByIndexLONG(sMarketNo, nIndex, pSKStock)
+            pSKStock, _= self.skQ.SKQuoteLib_GetStockByIndexLONG(sMarketNo, nIndex, pSKStock)
             self.stockid[nIndex] = symbol = pSKStock.bstrStockNo
         if nSimulate or nPtr<self.ptr[symbol]:
             return
-        self.last_ptr[symbol]=nPtr
-        nClose/=100
-        nBid/=100
-        nAsk/=100
-        bar_time, hour, minute = self._get_bar_time(nDate, nTimehms)
-        time_str = f"{hour:02}:{minute:02}:{nTimehms % 100:02}"
-
-        # self.redis_worker.submit(self.producer.push_tick(symbol,nClose,nQty,time,side,nPtr))
-        # idx = int(nTimehms[2:-2])
-        minute_changed = not self.orderflow[symbol] or self.orderflow[symbol][-1].time.minute!=(minute+1)%60
-        last:Bar = None
-        if minute_changed:
-            self.producer.lastest_ptr[symbol] = nPtr
-            if self.orderflow[symbol]:
-                tmp:Bar = self.orderflow[symbol][-1]
-                dnom = tmp.vol - tmp.delta_hlc[-1]
-                t=(tmp.vol+tmp.delta_hlc[-1])/dnom if dnom!=0 else float('inf')
-                if abs(tmp.delta_hlc[-1])>150 and (t>2 or t<0.5):
-                    msg=f'【{symbol}】{tmp.time.time()} {tmp.delta_hlc}'
-                    self.signals.alert.emit('Delta Imbalanced',msg)
-                print(f"【{symbol}】",tmp)
-
-            tmp = Bar(bar_time,nClose,nClose,nClose,nClose,nQty)#, [0]*3, 0, DefaultSortedDict(lambda: [0,0,0])
-            self.orderflow[symbol].append(tmp)
-            last = self.orderflow[symbol][-1]
-        else:
-            last = self.orderflow[symbol][-1]
-            if nClose>last.high:
-                last.high=nClose
-            elif nClose<last.low:
-                last.low=nClose
-            last.close=nClose
-            last.vol+=nQty
-
-        last.price_map[nClose][0] += nQty
-        tmp = (nAsk+nBid)/2
-        if nClose > tmp:
-            side = 1
-        elif nClose < tmp:
-            side = -1
-        else:
-            side = 0
-
-        if side>0:
-            last.delta_hlc[-1]+=nQty #close delta
-            last.trades_delta+=1
-            last.price_map[nClose][1]+=nQty
-            last.price_map[nClose][2]+=1
-        elif side<0:
-            last.delta_hlc[-1]-=nQty
-            last.trades_delta-=1
-            last.price_map[nClose][1]-=nQty
-            last.price_map[nClose][2]-=1
-            
-        if last.delta_hlc[-1]>last.delta_hlc[0]:
-            last.delta_hlc[0]=last.delta_hlc[-1]
-        elif last.delta_hlc[-1]<last.delta_hlc[1]:
-            last.delta_hlc[1]=last.delta_hlc[-1]
-
-        self.signals.data_sig.emit(f"【{symbol}】Time:{time_str} Bid:{nBid} Ask:{nAsk} Strike:{(nClose)} Qty:{nQty}", side)
-        if nQty>30:
-            msg=f"【{symbol}】{time_str} {'SELL' if side<0 else 'BUY'} {nQty} at ${nClose}"
-            self.signals.alert.emit('BigTrade',msg)
-
-    def OnNotifyHistoryTicksLONG(self, sMarketNo, nIndex, nPtr, nDate, nTimehms, nTimemillismicros, nBid, nAsk, nClose, nQty, nSimulate):
-        # TODO: batch process history data, minute chart & range chart
+        if not self.live_timer.isActive() and not self.backfill_timer.isActive():
+            self.live_timer.start()
+        self.idle_timer.start()
+        mid_price = (nAsk+nBid)/2
+        side = 0
+        if mid_price:
+            if nClose > mid_price:
+                side = 1
+            elif nClose < mid_price:
+                side = -1
+        tick = Tick(ptr=nPtr, time=self._to_timestamp(nDate,nTime), side=side, price=nClose/100, qty=nQty)
+        self.tick_buffer[symbol].append(tick)
+        
+    def OnNotifyHistoryTicksLONG(self, sMarketNo, nIndex, nPtr, nDate, nTime, nTimemillismicros, nBid, nAsk, nClose, nQty, nSimulate):
+        #TODO rust based
         if not (symbol:=self.stockid.get(nIndex)):
             pSKStock = sk.SKSTOCKLONG()
-            pSKStock, nCode= self.skQ.SKQuoteLib_GetStockByIndexLONG(sMarketNo, nIndex, pSKStock)
+            pSKStock, _= self.skQ.SKQuoteLib_GetStockByIndexLONG(sMarketNo, nIndex, pSKStock)
             self.stockid[nIndex]= symbol = pSKStock.bstrStockNo
         if nSimulate or nPtr<self.ptr[symbol]:
             return
-        # Not sure if needed sometimes last tick never push
-        self.last_ptr[symbol]=nPtr 
-        nClose/=100
-        nBid/=100
-        nAsk/=100
-        bar_time, hour, minute = self._get_bar_time(nDate, nTimehms)
-        time_str = f"{hour:02}:{minute:02}:{nTimehms % 100:02}"
+        self.live_timer.stop()
+        mid_price = (nAsk+nBid)/2
+        side = 0
+        if mid_price:
+            if nClose > mid_price:
+                side = 1
+            elif nClose < mid_price:
+                side = -1
+        tick = Tick(ptr=nPtr, time=self._to_timestamp(nDate,nTime), side=side, price=nClose/100, qty=nQty)
+        self.tick_buffer[symbol].append(tick)
 
-        # self.redis_worker.submit(self.producer.push_tick(symbol,nClose,nQty,time,side,nPtr))
-        minute_changed = not self.orderflow[symbol] or self.orderflow[symbol][-1].time.minute!=(minute+1)%60
-        last:Bar = None
-        if minute_changed:
-            self.producer.lastest_ptr[symbol] = nPtr
-            tmp = Bar(bar_time,nClose,nClose,nClose,nClose,nQty)#, [0]*3, 0, DefaultSortedDict(lambda: [0,0,0]))
-            self.orderflow[symbol].append(tmp)
-            last = self.orderflow[symbol][-1]
-        else: 
-            last = self.orderflow[symbol][-1]
-            if nClose>last.high:
-                last.high=nClose
-            elif nClose<last.low:
-                last.low=nClose
-            last.close=nClose
-            last.vol+=nQty
-
-        last.price_map[nClose][0] += nQty
-        tmp = (nAsk+nBid)/2
-        if nClose > tmp:
-            side = 1
-        elif nClose < tmp:
-            side = -1
-        else:
-            side = 0
-
-        if side>0:
-            last.delta_hlc[-1]+=nQty #close delta
-            last.trades_delta+=1
-            last.price_map[nClose][1]+=nQty
-            last.price_map[nClose][2]+=1
-        elif side<0:
-            last.delta_hlc[-1]-=nQty
-            last.trades_delta-=1
-            last.price_map[nClose][1]-=nQty
-            last.price_map[nClose][2]-=1
-            
-        if last.delta_hlc[-1]>last.delta_hlc[0]:
-            last.delta_hlc[0]=last.delta_hlc[-1]
-        elif last.delta_hlc[-1]<last.delta_hlc[1]:
-            last.delta_hlc[1]=last.delta_hlc[-1]
+        self.backfill_timer.start()
 
     def OnNotifyBest5LONG(self, sMarketNo, nStockidx, *args):
+        #TODO rust based
         # we focus on the change of order book
         if not (symbol:=self.stockid.get(nStockidx)):
-            pSKStock = sk.SKFOREIGNLONG()
-            pSKStock, nCode = self.skQ.SKQuoteLib_GetStockByIndexLONG(nStockidx, pSKStock)
+            pSKStock = sk.SKSTOCKLONG()
+            pSKStock, nCode = self.skQ.SKQuoteLib_GetStockByIndexLONG(sMarketNo, nStockidx, pSKStock)
             self.stockid[nStockidx] = symbol = pSKStock.bstrStockNo
         if args[-1]:
             return
@@ -252,15 +248,8 @@ class SKQuoteLibEvent(QObject):
         print(data)
     
     def OnNotifyFutureTradeInfoLONG(self, bstrStockNo, sMarketNo, nStockidx, nBuyTotalCount, nSellTotalCount, nBuyTotalQty, nSellTotalQty, nBuyDealTotalCount, nSellDealTotalCount):
+        #TODO rust based
         # we focus on the change of order book
-        
-        # msg = ("【FutureInfo】"+ bstrStockNo + 
-        # " 委託買進筆數" + str(nBuyTotalCount)+ 
-        # " 委託賣出筆數" + str(nSellTotalCount)+ 
-        # " 委託買進口數" + str(nBuyTotalQty)+ 
-        # " 委託賣出口數" + str(nSellTotalQty)+ 
-        # " 成交買進筆數" + str(nBuyDealTotalCount)+
-        # " 成交賣出筆數" + str(nSellDealTotalCount))
         data={
             'avg_order_b':nBuyTotalQty/nBuyTotalCount,
             "avg_order_s": nSellTotalQty/nSellTotalCount,
@@ -268,62 +257,79 @@ class SKQuoteLibEvent(QObject):
             "deal_bc": nBuyDealTotalCount,
             "deal_sc": nSellDealTotalCount
         }
-        # if bstrStockNo=='MTX00':
-            # print(msg)
+        return
     
     def OnNotifyQuoteLONG(self, sMarketNo, nIndex):
+        #TODO rust based
         pSKStock = sk.SKSTOCKLONG()
         pSKStock, nCode= self.skQ.SKQuoteLib_GetStockByIndexLONG(sMarketNo, nIndex, pSKStock)
-        # msg= ("【OnNotifyQuoteLONG】" + "商品代碼" + str(pSKStock.bstrStockNo) + " 名稱" + str(pSKStock.bstrStockName) + " 開盤價" + str(pSKStock.nOpen / 100) + " 成交價" + str(pSKStock.nClose / 100) + " 最高" + str(pSKStock.nHigh / 100) + " 最低" + str(pSKStock.nLow / 100) + " 買盤量" + str(pSKStock.nTBc) + " 賣盤量" + str(pSKStock.nTAc) + " 總量" + str(pSKStock.nTQty) + " 昨收" + str(pSKStock.nRef / 100) + " 昨量" + str(pSKStock.nYQty) + " 買價" + str(pSKStock.nBid/100) + " 買量" + str(pSKStock.nBc) + " 賣價" + str(pSKStock.nAsk/100) + " 賣量" + str(pSKStock.nAc) +" OI"+str(pSKStock.nFutureOI))
+        self.stockid[nIndex] = pSKStock.bstrStockNo
         data={'Symbol':pSKStock.bstrStockName,
-            'Price':pSKStock.nClose/(10**pSKStock.sDecimal),
-            'Open':pSKStock.nOpen/(10**pSKStock.sDecimal),
-            'High':pSKStock.nHigh/(10**pSKStock.sDecimal),
-            'Low':pSKStock.nLow/(10**pSKStock.sDecimal),
-            'Vol':pSKStock.nTQty,'YVol':pSKStock.nYQty,'Ref':pSKStock.nRef/(10**pSKStock.sDecimal),'OI':pSKStock.nFutureOI}
-        self.signals.quote_update.emit(pSKStock.bstrStockNo, data, 'DM')
-        # print(data)
+            'C':pSKStock.nClose/(10**pSKStock.sDecimal),
+            'O':pSKStock.nOpen/(10**pSKStock.sDecimal),
+            'H':pSKStock.nHigh/(10**pSKStock.sDecimal),
+            'L':pSKStock.nLow/(10**pSKStock.sDecimal),
+            'Vol':pSKStock.nTQty,'YVol':pSKStock.nYQty,'Ref':pSKStock.nRef/(10**pSKStock.sDecimal),'OI':pSKStock.nFutureOI, 'ID':pSKStock.bstrStockNo}
+        # self.signals.quote_update.emit(pSKStock.bstrStockNo, data, 'DM')
+        self.producer.pub_quote(data)
+
+    def cleanup(self):
+        if self.backfill_timer.isActive():
+            self.backfill_timer.stop()
+        if self.live_timer.isActive():
+            self.live_timer.stop()
+        if self.idle_timer.isActive():
+            self.idle_timer.stop()
+        self.producer.insert_ticks()
 
 class DomesticQuote(QObject):
-    ready_sig=Signal()
+    # acc=''
+    # passwd=''
     def __init__(self, skC):
         super().__init__()
         self.skC = skC
         self.retry_count = 0
         self.signals = SignalManager.get_instance()
+        self.symlist = ['TX00', 'MTX00'] # this is for tick
 
     def run(self):
         pythoncom.CoInitialize()
         try:
-            self.redis_worker = AsyncRedisWorker()
+            # self.skC = cc.CreateObject(sk.SKCenterLib, interface=sk.ISKCenterLib)
+            # self.skC.SKCenterLib_LoginSetQuote(self.acc,self.passwd,'Y')
+            self.async_worker = AsyncWorker()
             self.skQ = cc.CreateObject(sk.SKQuoteLib,interface=sk.ISKQuoteLib)
-            self.SKQuoteEvent = SKQuoteLibEvent(self.skC, self.skQ, self.redis_worker)
+            self.SKQuoteEvent = SKQuoteLibEvent(self.skC, self.skQ, self.async_worker)
             self.SKQuoteLibEventHandler = cc.GetEvents(self.skQ, self.SKQuoteEvent)
             self.SKQuoteEvent.reconn.connect(self.conn_wrap)
-        
         finally:
             pythoncom.CoUninitialize()
             self.timer = QTimer()
             self.timer.setInterval(1500)  # check every 1.5s
             self.timer.timeout.connect(self.check_connection_status)
+
+            self.signals.restart_dm.connect(self.quoteDC)
+            self.SKQuoteEvent.fetch_ptr(self.symlist)
             self.conn_wrap()
 
     def init(self):
         # self.fetch_options()
-        stocklist = ['TX00', 'MTX00']
-        self.SKQuoteEvent.fetch_ptr(stocklist)
-        self.subtick(stocklist)
-        self.subquote(stocklist)
+        try:
+            self.subquote()
+        except Exception as e:
+            print(e)
+            self.signals.restart_dm.emit()
+            return
+        self.SKQuoteEvent.backfill_timer.start()
+        self.subtick()
 
-        self.ready_sig.emit()
-        pass
     @Slot()
     def conn_wrap(self):
         self.SKQuoteEvent.reconn.disconnect(self.conn_wrap)
+        self.signals.restart_dm.disconnect(self.quoteDC)
         self.quoteConnect()
 
     def quoteConnect(self):
-        # print('quoteCalled')
         nCode = self.skQ.SKQuoteLib_EnterMonitorLONG()
         msg = "【Quote_Connect】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
         self.signals.log_sig.emit(msg)
@@ -335,6 +341,7 @@ class DomesticQuote(QObject):
         if self.SKQuoteEvent.status == 3:
             self.timer.stop()
             self.SKQuoteEvent.reconn.connect(self.conn_wrap)
+            self.signals.restart_dm.connect(self.quoteDC)
             self.init()
         elif self.retry_count >= 30:
             self.timer.stop()
@@ -348,25 +355,30 @@ class DomesticQuote(QObject):
         msg = "【Quote_DC】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
         self.signals.log_sig.emit(msg)
     
-    def subtick(self, stocklist: list[str]):
-        pg=0
-        for stockNo in stocklist:
+    def subtick(self):
+        pg=-1
+        for stockNo in self.symlist:
             psPageNo, nCode = self.skQ.SKQuoteLib_RequestTicks(pg, stockNo)
-            msg = "【SubTick】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
+            msg = "【SubTick】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)+'\t'+stockNo
             self.signals.log_sig.emit(msg)
-            nCode = self.skQ.SKQuoteLib_RequestFutureTradeInfo(ctypes.c_short(pg), stockNo)
-            msg = "【FutureInfo】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
-            self.signals.log_sig.emit(msg)
-            pg+=1
+            # nCode = self.skQ.SKQuoteLib_RequestFutureTradeInfo(ctypes.c_short(pg), stockNo)
+            # msg = "【FutureInfo】" +stockNo+ self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
+            # self.signals.log_sig.emit(msg)
+            pg = psPageNo+1
 
-    def subquote(self, stocklist: list[str]):
+    def subquote(self):
         # could only subscribe 100 stock 
-        stocklist.extend(['2408','TSEA','OTCA','2330'])#'CYF00'
-        for i in range(0,len(stocklist),100):
-            tmp = ','.join(stocklist[i:i+100])
-            _, nCode = self.skQ.SKQuoteLib_RequestStocks(-1, tmp)
-            msg = "【SubQuote】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
+        pg=-1
+        ls = self.symlist.copy()
+        ls.extend(['TSEA','OTCA','2330','2317','2454'])#'CYF00' # Additional quote
+        for i in range(0,len(ls),100):
+            tmp = ','.join(ls[i:i+100])
+            psPageNo, nCode = self.skQ.SKQuoteLib_RequestStocks(pg, tmp)
+            if nCode:
+                raise RuntimeError("DM failed to subscribe. Restart!") 
+            msg = "【SubQuote】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)+'\t'+tmp
             self.signals.log_sig.emit(msg)
+            pg = psPageNo+1
 
     def suboptions(self, optionId):
         #TX1,TX2,TXO,TX3,TX4 <= one of these
@@ -381,7 +393,7 @@ class DomesticQuote(QObject):
         nCode = self.skQ.SKQuoteLib_RequestStockList(3)
 
     def requestKlines(self, stockNo: str):
-        global Klines
+        pass
         Klines = np.empty((0, 6))
 
         # min(volume)
@@ -396,8 +408,9 @@ class DomesticQuote(QObject):
 
         return df.tail(900)
     
-    def cleanup(self):
+    def stop(self):
         if hasattr(self,'SKQuoteEvent'):
-            self.redis_worker.stop()
-        print("Domestic exit.")
+            self.SKQuoteEvent.cleanup()
+            self.async_worker.stop()
+            print("Domestic exit.")
 
