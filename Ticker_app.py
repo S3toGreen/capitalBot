@@ -1,15 +1,11 @@
+import sys
 from Broker import Broker
 from SignalManager import SignalManager
-from PySide6.QtWidgets import *
-from PySide6.QtCore import *
-from PySide6.QtGui import *
+from PySide6.QtWidgets import * #QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QFormLayout, QCheckBox, QPlainTextEdit
+from PySide6.QtCore import QThread, Slot
+from PySide6.QtGui import QColorConstants, QTextCharFormat, QFont, QTextCursor, QIcon, QAction
 import pyqtgraph as pg
-import numpy as np
-import Config
-import sys
-from sortedcontainers import SortedDict
-from Profile import VolumeVisualize
-from watchlist import WatchList
+import redisworker.Config as Config
 from windows_toasts import WindowsToaster, Toast, ToastScenario
 import faulthandler
 faulthandler.enable()
@@ -22,25 +18,26 @@ ANSI_COLOR={-1:QColorConstants.Red,1:QColorConstants.Green,0:QColorConstants.Whi
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setWindowTitle("Tickers")
         self.init_ui()
-
-        self.tickers = QThread()
-        self.worker = Broker()
-
+        
+        self.broker_thread = QThread()
+        self.broker = Broker()
+        
         self.signals = SignalManager.get_instance()
         self.signals.log_sig.connect(self.log_handler)
         self.signals.data_sig.connect(self.data_handler)
         self.signals.alert.connect(self.toast_alert)
 
-        self.worker.moveToThread(self.tickers)
-        self.tickers.started.connect(self.worker.init)
+        self.broker.moveToThread(self.broker_thread)
+        self.broker_thread.started.connect(self.broker.init)
+        self.broker_thread.finished.connect(self.broker.stop)
         # self.volprof = VolumeVisualize(self)
-        self.watchlist = WatchList(self)
-        self.toaster=WindowsToaster('Trading App')
+        # self.watchlist = WatchList(self)
+        self.toaster=WindowsToaster('Tickers')
         self.newToast = Toast(scenario=ToastScenario.Reminder,suppress_popup=False)
 
     def init_ui(self):
-        self.setWindowTitle("My App")
         self.resize(600,600)
         layout = QHBoxLayout()
         layout.setSpacing(15)
@@ -112,6 +109,7 @@ class MainWindow(QMainWindow):
         if self.msg2.verticalScrollBar().value() >= (self.msg2.verticalScrollBar().maximum()-3):
             self.msg2.moveCursor(QTextCursor.MoveOperation.End)
             self.msg2.ensureCursorVisible()
+            
     @Slot(str,str)
     def toast_alert(self, title, msg):
         self.newToast.text_fields=[title,msg]
@@ -119,34 +117,56 @@ class MainWindow(QMainWindow):
         self.newToast = self.newToast.clone()
 
     def debug_trig(self):
-        self.worker.debug_state=self.debug.isChecked()
-        self.worker.update_debug()
+        self.broker.debug_state=self.debug.isChecked()
+        self.broker.update_debug()
 
     def run_init(self):
-        res = self.worker.login(self.form.itemAt(1).widget().text(), self.form.itemAt(3).widget().text())
+        res = self.broker.login(self.form.itemAt(1).widget().text(), self.form.itemAt(3).widget().text())
         if res:
             return
         self.debug.setDisabled(True)
-        self.tickers.start()
+        self.broker_thread.start()
 
-    def closeEvent(self, a0):
-        self.worker.saveData()
-        self.tickers.quit()
-        self.tickers.wait()
-        # if self.volprof:
-        #     self.volprof.close()
-        return super().closeEvent(a0)
-    
-    def show(self):
-        # self.volprof.show()
-        # self.volprof.move(self.x()+1200,self.volprof.y())
-        self.watchlist.show()
-        self.watchlist.move(self.x()+600,self.watchlist.y())
-        
-        return super().show()
+    def stop(self):
+        self.broker_thread.quit()
+        self.broker_thread.wait()
+
+    def restart(self):
+        self.signals.restart_dm.emit()
+        self.signals.restart_os.emit()
 
 if __name__=='__main__':
+    import ctypes
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(u'com.S3toGreen.TickersApp')
+
     app = QApplication([])
+    app.setQuitOnLastWindowClosed(False)
+
+    icon = QIcon('icon.ico')
+    app.setWindowIcon(icon)
+
     window = MainWindow()
     window.show()
+    app.aboutToQuit.connect(window.stop)
+
+    tray = QSystemTrayIcon()
+    tray.setIcon(icon)
+    tray.setVisible(True)
+    tray.setToolTip('TickerApp')
+
+    menu = QMenu()
+    quit = QAction('Quit')
+    quit.triggered.connect(app.quit)
+    menu.addAction(quit)
+    restart = QAction('Restart')
+    restart.triggered.connect(window.restart)
+    menu.addAction(restart)
+
+    tray.setContextMenu(menu)
+
+    def on_tray_activated(reason):
+        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
+            window.show()
+    tray.activated.connect(on_tray_activated)
+
     sys.exit(app.exec())
