@@ -9,7 +9,6 @@ from SignalManager import SignalManager
 from quote.DMQuoteThread import DomesticQuote
 from quote.OSQuoteThread import OverseaQuote
 from redisworker.AsyncWorker import AsyncWorker
-from redisworker.Receiver import DataReceiver
 
 # Simulated trading or dry run
 # work flow send order to broker class  
@@ -165,6 +164,8 @@ class QuoteBroker(Broker):
         return
     
 class OrderBroker(Broker):
+    from redisworker.Receiver import DataReceiver
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.skO = cc.CreateObject(sk.SKOrderLib,interface=sk.ISKOrderLib)

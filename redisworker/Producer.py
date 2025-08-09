@@ -8,6 +8,7 @@ from clickhouse_connect import get_async_client
 from clickhouse_connect.driver.exceptions import ClickHouseError
 from .Config import passwd
 from redis.asyncio import Redis
+from itertools import dropwhile
 
 class DataProducer:
     def __init__(self, market, worker, db, redis:Redis):
@@ -16,6 +17,7 @@ class DataProducer:
         self.market = market # OS,DM
         self.lastest_ptr = defaultdict(int)
         self.ticks_buf=defaultdict(list)
+        self.lastest_bar = {}
         self.bars_buf=[]
         self.db = db
 
@@ -53,17 +55,28 @@ class DataProducer:
         # push to ohlcv and fp separately
         m_type = 1 if self.market=='OS' else 2
 
+        if symbol not in self.lastest_bar:
+            self.lastest_bar[symbol] = self.db.query(f"SELECT time FROM ohlcv{self.market} WHERE symbol='{symbol}' ORDER BY time DESC LIMIT 1").result_rows
+            self.lastest_bar[symbol] = pd.Timestamp(self.lastest_bar[symbol][0][0]) if self.lastest_bar[symbol] else pd.Timestamp(0,tz=bars[0].time.tz)
+
+        new_bars = dropwhile(lambda b: b.time <= self.lastest_bar[symbol], bars)
+
         rows = [(
             m_type, bar.time, symbol, bar.open, bar.high, bar.low, bar.close, bar.vol,
             bar.delta_hlc[0], bar.delta_hlc[1], bar.delta_hlc[2], bar.trades_delta,
             [(p, v[0], v[1], v[2]) for p,v in bar.price_map.items()]
-            ) for bar in bars
+            ) for bar in new_bars
         ]
 
         try:
-            await self.db.insert(f'bar_pipe', rows)
-            print(f"push to orderflow{self.market} succeed!")
+            if rows:
+                await self.db.insert(f'bar_pipe', rows)
+                print(f"push to orderflow{self.market} succeed!")
+                self.lastest_bar[symbol] = bars[-1].time
+            else:
+                print('nothing to push.', self.lastest_bar[symbol])
             await self.update_lastest_ptr(symbol)
+            
         except ClickHouseError as e:
             print('clickhouseError:', e)
             raise
