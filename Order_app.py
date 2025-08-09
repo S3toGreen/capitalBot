@@ -1,28 +1,22 @@
 import sys
-from Broker import QuoteBroker
+from Broker import OrderBroker
 from SignalManager import SignalManager
 from PySide6.QtWidgets import * #QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QFormLayout, QCheckBox, QPlainTextEdit
 from PySide6.QtCore import QThread, Slot
 from PySide6.QtGui import QColorConstants, QTextCharFormat, QFont, QTextCursor, QIcon, QAction
-import pyqtgraph as pg
 import redisworker.Config as Config
 from windows_toasts import WindowsToaster, Toast, ToastScenario
-import faulthandler
-faulthandler.enable()
 
-pg.setConfigOptions(useOpenGL=True)
-
-#累計口/筆差, 大/散單(Accumulate), Volume Profile 
 ANSI_COLOR={-1:QColorConstants.Red,1:QColorConstants.Green,0:QColorConstants.White}
 
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("TickerApp")
+        self.setWindowTitle("OrderApp")
         self.init_ui()
         
         self.broker_thread = QThread()
-        self.broker = QuoteBroker()
+        self.broker = OrderBroker()
         
         self.signals = SignalManager.get_instance()
         self.signals.log_sig.connect(self.log_handler)
@@ -34,17 +28,15 @@ class MainWindow(QMainWindow):
         self.broker_thread.finished.connect(self.broker.stop)
         # self.volprof = VolumeVisualize(self)
         # self.watchlist = WatchList(self)
-        self.toaster=WindowsToaster('Tickers')
+        self.toaster=WindowsToaster('Order_App')
         self.newToast = Toast(scenario=ToastScenario.Reminder,suppress_popup=False)
 
     def init_ui(self):
         self.resize(600,600)
         layout = QHBoxLayout()
         layout.setSpacing(15)
-        layout.setContentsMargins(15,15,15,0)
 
         # Login Form
-        layout2 = QVBoxLayout()
         id = QLineEdit(parent=self)
         id.setMinimumWidth(150)
         id.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
@@ -58,14 +50,7 @@ class MainWindow(QMainWindow):
         self.debug = QCheckBox("debug")
         self.form.addRow(self.debug)
         self.debug.checkStateChanged.connect(self.debug_trig)
-
-        self.msg2 = QPlainTextEdit()
-        self.msg2.setReadOnly(True)
-        self.msg2.setMinimumWidth(240)
-
-        layout2.addLayout(self.form,1)
-        layout2.addWidget(self.msg2,2)
-
+        layout.addLayout(self.form,1)
         id.setText(Config.id)
         id.returnPressed.connect(self.run_init)
         passwd.setText(Config.passwd)
@@ -75,29 +60,29 @@ class MainWindow(QMainWindow):
         self.msg1 = QPlainTextEdit()
         self.msg1.setReadOnly(True)
         self.msg1.setMaximumBlockCount(150)
-
-        layout.addLayout(layout2,1)
         layout.addWidget(self.msg1,3)
+        
+        layout3 = QVBoxLayout()
+        layout3.setContentsMargins(15,15,15,0)
+        layout3.setSpacing(15)
+        layout3.addLayout(layout)
 
-        # layout3 = QVBoxLayout()
-        # layout3.setContentsMargins(15,15,15,0)
-        # layout3.setSpacing(15)
-        # layout3.addLayout(layout)
-
-        # layout = QHBoxLayout()
-        # # layout.setSpacing(15)
-        # self.msg2 = QPlainTextEdit()
-        # self.msg2.setReadOnly(True)
-        # self.msg2.setMaximumBlockCount(1500)
-
-        # layout.addWidget(self.msg3,1)
-        # layout.addWidget(self.msg2,3)
-        # layout3.addLayout(layout,1)
+        layout = QHBoxLayout()
+        # layout.setSpacing(15)
+        self.msg2 = QPlainTextEdit()
+        self.msg2.setReadOnly(True)
+        self.msg2.setMaximumBlockCount(1500)
+        self.msg3 = QPlainTextEdit()
+        self.msg3.setReadOnly(True)
+        self.msg3.setMinimumWidth(225)
+        layout.addWidget(self.msg3,1)
+        layout.addWidget(self.msg2,3)
+        layout3.addLayout(layout,1)
 
         status = QStatusBar()
 
         container = QWidget()
-        container.setLayout(layout)
+        container.setLayout(layout3)
         
         self.setStatusBar(status)
         # Set the central widget of the Window.
@@ -140,18 +125,18 @@ class MainWindow(QMainWindow):
         self.broker_thread.quit()
         self.broker_thread.wait()
 
-    def restart(self):
-        self.signals.restart_dm.emit()
-        self.signals.restart_os.emit()
+    # def restart(self):
+    #     self.signals.restart_dm.emit()
+    #     self.signals.restart_os.emit()
 
 if __name__=='__main__':
     import ctypes
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(u'com.S3toGreen.TickerApp')
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(u'com.S3toGreen.OrderApp')
 
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
 
-    icon = QIcon('./asset/ticker.ico')
+    icon = QIcon('./asset/broker.ico')
     app.setWindowIcon(icon)
 
     window = MainWindow()
@@ -161,15 +146,15 @@ if __name__=='__main__':
     tray = QSystemTrayIcon()
     tray.setIcon(icon)
     tray.setVisible(True)
-    tray.setToolTip('TickerApp')
+    tray.setToolTip('OrderApp')
 
     menu = QMenu()
     quit = QAction('Quit')
     quit.triggered.connect(app.quit)
     menu.addAction(quit)
-    restart = QAction('Restart')
-    restart.triggered.connect(window.restart)
-    menu.addAction(restart)
+    # restart = QAction('Restart')
+    # restart.triggered.connect(window.restart)
+    # menu.addAction(restart)
 
     tray.setContextMenu(menu)
 

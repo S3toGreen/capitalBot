@@ -57,14 +57,16 @@ engine.start()
 
 1. **COM Callback Layer:** `OnNotifyTicksLONG` receives raw ticks from broker.
 2. **Buffering:** Ticks are appended to in‐memory queues keyed by symbol.
-3. **Batch Aggregator:** Every 0.3s, `_agg_tick` processes new ticks into `Bar` objects.
+3. **Batch Aggregator:** Every N miliseconds, `_agg_tick` processes new ticks into `Bar` objects.
 4. **GUI Binding:** PySide6 visualizes incoming bars and orderflow charts.
+5. **Redis:** In-memory database system for better IPC latency 
 
 ### 🔧 Roadmap
 
-* [ ] **Rust Migration:** Port hot‐path functions (`OnNotifyTicksLONG`, `_agg_tick`) to Rust for sub‐millisecond throughput while retaining Python bindings.
-* [ ] **Built‑in Trading App:** Develop a simple UI for strategy configuration and live monitoring.
+* [ ] **Built‑in Algo Trading App:** Develop a simple UI for strategy live monitoring. (optionally strategy configuration)
+* [ ] **WebGL\WebGPU Migration:** Take advantage of browser GPU framework, cross-platform.
 * [ ] **Plugin System:** Allow community‐driven extensions for custom indicators and data sources.
+* [ ] **Rust Migration:** Port hot‐path functions (`OnNotifyTicksLONG`, `_agg_tick`) to Rust for sub‐millisecond throughput while retaining Python bindings. simd, avx2
 
 ### 🤝 Contributing
 
@@ -75,6 +77,6 @@ Please:
 2. Commit your changes with clear messages.
 3. Open a pull request describing the improvement.
 -->
-### 📄 License
+<!-- ### 📄 License
 
-Distributed under the MIT License. See [LICENSE](./LICENSE) for details.
+Distributed under the MIT License. See [LICENSE](./LICENSE) for details. -->

@@ -69,7 +69,7 @@ class SKQuoteLibEvent(QObject):
         sec = nTime%100
         return self._cached_today_dt.replace(hour=hour, minute=minute, second=sec)
 
-    def _process_tick_buffer(self, publish_to_redis: bool = False):
+    def _process_tick_buffer(self):
         if not self.tick_buffer:
             return
 
@@ -83,8 +83,6 @@ class SKQuoteLibEvent(QObject):
             if not ticks: continue
             self.producer.ticks_buf[symbol].extend(ticks)
             self._agg_tick(symbol, ticks)
-            if publish_to_redis:
-                self.producer.pub_ticks(symbol, ticks)
             ticks.clear()
 
     def _finalize_backfill(self):
@@ -92,7 +90,7 @@ class SKQuoteLibEvent(QObject):
         self.live_timer.start()
     
     def _live_tick(self):
-        self._process_tick_buffer(True)
+        self._process_tick_buffer()
 
     def _agg_tick(self, symbol, ticks:list):
         # TODO push the last bar EOD
@@ -200,6 +198,7 @@ class SKQuoteLibEvent(QObject):
             elif nClose < mid_price:
                 side = -1
         tick = Tick(ptr=nPtr, time=self._to_timestamp(nDate,nTime), side=side, price=nClose/100, qty=nQty)
+        self.producer.pub_ticks(symbol, tick)
         self.tick_buffer[symbol].append(tick)
         
     def OnNotifyHistoryTicksLONG(self, sMarketNo, nIndex, nPtr, nDate, nTime, nTimemillismicros, nBid, nAsk, nClose, nQty, nSimulate):

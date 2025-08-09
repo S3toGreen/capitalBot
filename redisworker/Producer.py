@@ -68,11 +68,11 @@ class DataProducer:
             print('clickhouseError:', e)
             raise
 
-    def pub_ticks(self,symbol, ticks):
-        self.async_worker.submit(self.pub_ticks_async(symbol, ticks))
-    async def pub_ticks_async(self, symbol, ticks:list):
+    def pub_ticks(self,symbol, tick):
+        self.async_worker.submit(self.pub_ticks_async(symbol, tick))
+    async def pub_ticks_async(self, symbol, tick):
         pub_key = f'tick:{self.market}:{symbol}'
-        # print(ticks)
+        await self.redis.publish(pub_key, json.dumps(tick.to_dict()))
 
     def insert_ticks(self):
         asyncio.run_coroutine_threadsafe(self.insert_ticks_async(), self.async_worker.loop).result()

@@ -102,22 +102,7 @@ class Broker(QObject):
         self.SKReplyEvent = SKReplyLibEvent(self.skC)
         self.SKReplyLibEventHandler = cc.GetEvents(self.skR, self.SKReplyEvent)
 
-        self.skO = cc.CreateObject(sk.SKOrderLib,interface=sk.ISKOrderLib)
-        SKOrderEvent = SKOrderLibEvent(self.skC)
-        self.SKOrderLibEventHandler = cc.GetEvents(self.skO, SKOrderEvent)
-
         self.signals = SignalManager.get_instance()
-
-        self.domestic_thread = QThread()
-        self.oversea_thread = QThread()
-        self.domestic = DomesticQuote(self.skC)
-        self.oversea = OverseaQuote(self.skC)
-        self.domestic.moveToThread(self.domestic_thread)
-        self.oversea.moveToThread(self.oversea_thread)
-        self.domestic_thread.started.connect(self.domestic.run)
-        self.oversea_thread.started.connect(self.oversea.run)
-        self.domestic_thread.finished.connect(self.domestic.stop)
-        self.oversea_thread.finished.connect(self.oversea.stop)
 
         nCode = self.skC.SKCenterLib_SetLogPath("CapitalLog")
 
@@ -141,13 +126,55 @@ class Broker(QObject):
 
         return nCode
 
+    def update_debug(self):
+        nCode = self.skC.SKCenterLib_Debug(self.debug_state)
+        if nCode:
+            msg = "【SetDebug】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
+            self.signals.log_sig.emit(msg)
+
+    
+
+class QuoteBroker(Broker):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.domestic_thread = QThread()
+        self.oversea_thread = QThread()
+        self.domestic = DomesticQuote(self.skC)
+        self.oversea = OverseaQuote(self.skC)
+        self.domestic.moveToThread(self.domestic_thread)
+        self.oversea.moveToThread(self.oversea_thread)
+        self.domestic_thread.started.connect(self.domestic.run)
+        self.oversea_thread.started.connect(self.oversea.run)
+        self.domestic_thread.finished.connect(self.domestic.stop)
+        self.oversea_thread.finished.connect(self.oversea.stop)
+
     def init(self):
-        self.worker = AsyncWorker()
-        self.orderSub = DataReceiver.create(self.worker, ['order:*'])
-        self.orderSub.message_received.connect(self._handle_order)
+        # self.worker = AsyncWorker()
+        # self.orderSub = DataReceiver.create(self.worker, ['order:*'])
+        # self.orderSub.message_received.connect(self._handle_order)
 
         self.domestic_thread.start()
         self.oversea_thread.start()
+
+    def stop(self):
+        self.oversea_thread.quit()
+        self.domestic_thread.quit()
+        self.domestic_thread.wait()
+        self.oversea_thread.wait()
+        return
+    
+class OrderBroker(Broker):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.skO = cc.CreateObject(sk.SKOrderLib,interface=sk.ISKOrderLib)
+        SKOrderEvent = SKOrderLibEvent(self.skC)
+        self.SKOrderLibEventHandler = cc.GetEvents(self.skO, SKOrderEvent)
+
+    def init(self):
+        # self.worker = AsyncWorker()
+        # self.orderSub = DataReceiver.create(self.worker, ['order:*'])
+        # self.orderSub.message_received.connect(self._handle_order)
 
         self.skR.SKReplyLib_ConnectByID(self.ID)
         self.order_init()
@@ -199,41 +226,9 @@ class Broker(QObject):
         print('order msg:', data)
         self.processOrder(data)
 
-    def processOrder(self, data:dict):
-        # TODO proxy order for faster execution
-        pass
-        # order = sk.FUTUREORDER()
-        # order.bstrFullAccount = acclist["TF"]
-        # # TM0000
-        # order.bstrStockNo = symbol #"MTX00"
-        # # 0:ROD  1:IOC  2:FOK
-        # order.sTradeType = 1
-        # # 0: buy 1: sell
-        # order.sBuySell = side
-        # order.sDayTrade = 0
-        # # 0:open 1:close 2:auto
-        # order.sNewClose = 2
-        # order.bstrPrice = price if price else "P"
-        # order.nQty = 1
-        # order.sReserved = 0
+    def stop(self):   
+        if hasattr(self, 'orderSub'):
+            self.orderSub.stop()
+            self.worker.stop()              
 
-        # self.skO.SendFutureOrderCLR(self.ID, 1, order)
-        # self.signals.log_sig.emit(f"Order Sent!")
-        # self.getInfo()
-
-    def close_all(self):
-        pass
-    def update_debug(self):
-        nCode = self.skC.SKCenterLib_Debug(self.debug_state)
-        if nCode:
-            msg = "【SetDebug】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
-            self.signals.log_sig.emit(msg)
-
-    def stop(self):        
-        self.orderSub.stop()
-        self.worker.stop()
-        self.oversea_thread.quit()
-        self.domestic_thread.quit()
-        self.domestic_thread.wait()
-        self.oversea_thread.wait()
         return

@@ -43,3 +43,12 @@ class Tick:
     price: float
     side: int
     qty: int
+    
+    def to_dict(self):
+        return {
+            'ptr': self.ptr,
+            'ts': self.time.isoformat(),
+            'p': self.price,
+            's': self.side,
+            'q': self.qty
+        }
