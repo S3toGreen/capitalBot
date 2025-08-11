@@ -1,22 +1,34 @@
 import pyqtgraph as pg
 from PySide6 import QtGui, QtCore
 import numpy as np
-from datetime import datetime
 
 pg.setConfigOptions(imageAxisOrder='row-major',
-                    useOpenGL=True,useCupy=True,useNumba=True)
+                    useOpenGL=False, antialias=False)
 
-class MinuteAxisItem(pg.DateAxisItem):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.zoomLevels.popitem()
-        self.zoomLevels.popitem()
+class MinuteAxisItem(pg.AxisItem):
+    def __init__(self, ts, orientation='bottom', **kwargs):
+        super().__init__(orientation, **kwargs)
+        self.setStyle(showValues=True, autoExpandTextSpace=True, autoReduceTextSpace=True)
+        self.enableAutoSIPrefix()
+        self.ts = ts.to_numpy()
+        self.tf = 1  # timeframe in minute
+    def tickStrings(self, values, scale, spacing):
+        """Formats the tick labels to show minutes"""
+        if not values: return []
+        if self.tf*spacing >= 1440: # ≥ 1 day
+            fmt = "%Y-%m-%d"
+        elif self.tf*spacing >= 60:  # ≥ 1 hour
+            fmt = "%m-%d %H:%M"
+        else:    # ≥ 1 minute
+            fmt = "%H:%M"
 
+        return [self.ts[int(v)].strftime(fmt) if 0 <= int(v) < len(self.ts) else '' for v in values]
+    
 class FixedScaleViewBox(pg.ViewBox):
     def __init__(self, *args, **kargs):
         super().__init__(*args, **kargs)
         self.last_width = 0
-        self.setLimits(minXRange=300,yMin=0)
+        self.setLimits(minXRange=30,yMin=0,xMin=-3)
         self.setMouseEnabled(x=True,y=False)
         self.setAutoVisible(y=True)
         self.enableAutoRange(self.YAxis)
@@ -34,126 +46,179 @@ class FixedScaleViewBox(pg.ViewBox):
         self.setXRange(x_min, x_min + new_range_width, padding=0)
         self.last_width = current_width
 
-class FootprintItem(pg.GraphicsObject):
-    def __init__(self, data):
+class CandleStickItem(pg.GraphicsObject):
+    def __init__(self, data, **kwargs):
         super().__init__()
         self.data = data
-        self.bar_width_seconds = 60 # Default to 1-minute bars
-        self.tick_size = 0.5
-        self.imbalance_threshold = 2.0  # e.g., Ask is 2x Bid
-        self.generatePicture()
+        print(data)
+        self.x_indices = self.data.index.to_numpy()
+        self.opens = self.data['open'].to_numpy()
+        self.highs = self.data['high'].to_numpy()
+        self.lows = self.data['low'].to_numpy()
+        self.closes = self.data['close'].to_numpy()
 
-    def setData(self, data):
-        """Updates the data and redraws the item."""
-        self.data = data
-        self.generatePicture()
-        self.update()
+        self.pen_wick = pg.mkPen(color=(150, 150, 150)) # Neutral gray for all wicks
+        self.pen_green = pg.mkPen('g')
+        self.pen_red = pg.mkPen('r')
+        self.brush_green = pg.mkBrush('g')
+        self.brush_red = pg.mkBrush('r')
 
-    def generatePicture(self):
-        """Pre-calculates boundaries and prepares for painting."""
-        if self.data.empty:
-            self.picture = None
+    def paint(self, p, *args):
+        view_box = self.getViewBox()
+        if view_box is None:
             return
-            
-        # Get unique timestamps to determine bar spacing
-        self.timestamps = self.data.index.get_level_values(0).unique()
-        if len(self.timestamps) > 1:
-            # Calculate bar width from the first two timestamps
-            self.bar_width_seconds = (self.timestamps[1] - self.timestamps[0]).total_seconds() * 0.8
 
-        self._bounds = self.boundingRect()
-        self.picture = self.paint # For pyqtgraph's internal caching
+        x_min, x_max = view_box.viewRange()[0]
+        
+        # Find the start and end indices of the visible data
+        start_index = max(0, int(x_min) - 1)
+        end_index = min(len(self.x_indices), int(x_max) + 2)
 
+        # No need to draw if the range is invalid
+        if start_index >= end_index:
+            return
+
+        # Use array slicing for maximum performance
+        visible_x = self.x_indices[start_index:end_index]
+        visible_opens = self.opens[start_index:end_index]
+        visible_highs = self.highs[start_index:end_index]
+        visible_lows = self.lows[start_index:end_index]
+        visible_closes = self.closes[start_index:end_index]
+        
+        
+        # Set a dynamic candle width based on zoom
+        # This gives a good appearance at different zoom levels
+        candle_width = 0.8 * (visible_x[1] - visible_x[0]) if len(visible_x) > 1 else 0.8
+        half_width = candle_width / 2
+
+        # --- CORRECTED WICK DRAWING using QPainterPath ---
+        # 1. Create a QPainterPath object
+        # path = QtGui.QPainterPath()
+        
+        # 2. Build coordinate arrays for lines (low to high)
+        #    Format is [x0, x0, x1, x1, ...], [low0, high0, low1, high1, ...]
+        x_coords = np.repeat(visible_x, 2)
+        y_coords = np.empty(len(visible_x) * 2)
+        y_coords[0::2] = visible_lows
+        y_coords[1::2] = visible_highs
+        # print(y_coords)
+        # 3. Use arrayToQPath to build the path from numpy arrays.
+        #    The 'connect' array tells it to start a new line for each wick.
+        #    0 = moveTo, 1 = lineTo
+        connect = np.zeros(len(x_coords), dtype=np.ubyte)
+        connect[0::2] = 1  # Start a new line at the beginning of each wick
+        
+        # This is the magic function call
+        path = pg.functions.arrayToQPath(x_coords, y_coords, connect, False)
+        
+        # 4. Draw the entire path in a single, fast call
+        p.setPen(self.pen_wick)
+        p.drawPath(path)
+        # --- End of wick drawing ---
+
+        # Draw the candle bodies
+        is_green = visible_opens <= visible_closes
+        is_red = ~is_green
+        
+        # Draw green bodies
+        green_indices = np.where(is_green)[0]
+        if len(green_indices) > 0:
+            p.setPen(self.pen_green)
+            p.setBrush(self.brush_green)
+            # Create a list of QRectF objects for all green candles
+            rects = [
+                QtCore.QRectF(
+                    visible_x[i] - half_width, 
+                    visible_opens[i], 
+                    candle_width, 
+                    visible_closes[i] - visible_opens[i]
+                ) for i in green_indices
+            ]
+            p.drawRects(rects)
+
+        # Draw red bodies
+        red_indices = np.where(is_red)[0]
+        if len(red_indices) > 0:
+            p.setPen(self.pen_red)
+            p.setBrush(self.brush_red)
+            # Create a list of QRectF objects for all red candles
+            rects = [
+                QtCore.QRectF(
+                    visible_x[i] - half_width, 
+                    visible_opens[i], 
+                    candle_width, 
+                    visible_closes[i] - visible_opens[i]
+                ) for i in red_indices
+            ]
+            p.drawRects(rects)
+    
     def boundingRect(self):
-        """Returns the total bounds of the data."""
-        if self.data.empty:
+        # The bounding rectangle must encompass the entire dataset
+        # so pyqtgraph knows the item's total extent.
+        if self.x_indices.size == 0:
             return QtCore.QRectF()
-            
-        min_time = self.data.index.get_level_values(0).min().timestamp()
-        max_time = self.data.index.get_level_values(0).max().timestamp()
-        min_price = self.data.index.get_level_values(1).min()
-        max_price = self.data.index.get_level_values(1).max()
-
-        # Add padding for the last bar's width
-        return QtCore.QRectF(min_time, max_price, (max_time - min_time) + self.bar_width_seconds, (max_price - min_price))
-
-    def paint(self, painter, option, widget):
-        if self.data.empty:
-            return
-
-        # painter.setRenderHint(painter.RenderHint.Antialiasing, False)
-        
-        # Get the visible range from the view
-        view_range = self.getViewBox().viewRect()
-        
-        # Group data by timestamp for bar-by-bar processing
-        grouped = self.data.groupby(level=0)
-        
-        for timestamp, bar_data in grouped:
-            ts_posix = timestamp.timestamp()
-            
-            # Culling: Don't draw bars outside the visible range
-            if ts_posix + self.bar_width_seconds < view_range.left() or ts_posix > view_range.right():
-                continue
-
-            # Find POC (Point of Control) and max volume for this bar
-            bar_data['total_volume'] = bar_data['bid'] + bar_data['ask']
-            poc_price = bar_data['total_volume'].idxmax()[1]
-            max_volume_in_bar = bar_data['total_volume'].max()
-            if max_volume_in_bar == 0: continue
-
-            # --- Set up painter properties ---
-            painter.setPen(QtGui.QPen(QtGui.QColor(100, 100, 100)))
-            font = QtGui.QFont()
-            font.setPointSize(8)
-            painter.setFont(font)
-
-            # Draw each price level cell within the bar
-            for (ts, price), row in bar_data.iterrows():
-                bid_vol, ask_vol = row['bid'], row['ask']
-                
-                # --- Cell Rectangle ---
-                # The cell is split in half for bid and ask
-                cell_rect = QtCore.QRectF(ts_posix, price - self.tick_size / 2, self.bar_width_seconds, self.tick_size)
-                bid_rect = QtCore.QRectF(cell_rect.left(), cell_rect.top(), cell_rect.width() / 2, cell_rect.height())
-                ask_rect = QtCore.QRectF(cell_rect.center().x(), cell_rect.top(), cell_rect.width() / 2, cell_rect.height())
-                
-                # --- Background Coloring (Volume Heatmap) ---
-                # Opacity is proportional to volume
-                bg_alpha = int(255 * (row['total_volume'] / max_volume_in_bar))
-                painter.fillRect(bid_rect, QtGui.QBrush(QtGui.QColor(255, 0, 0, bg_alpha // 4)))
-                painter.fillRect(ask_rect, QtGui.QBrush(QtGui.QColor(0, 255, 0, bg_alpha // 4)))
-                
-                # --- Imbalance Highlighting ---
-                if ask_vol > bid_vol * self.imbalance_threshold and bid_vol > 0:
-                     painter.fillRect(ask_rect, QtGui.QBrush(QtGui.QColor(0, 255, 0, 150)))
-                elif bid_vol > ask_vol * self.imbalance_threshold and ask_vol > 0:
-                     painter.fillRect(bid_rect, QtGui.QBrush(QtGui.QColor(255, 0, 0, 150)))
-
-                # --- Text Drawing ---
-                text = f"{int(bid_vol)} x {int(ask_vol)}"
-                painter.drawText(cell_rect, QtCore.Qt.AlignmentFlag.AlignCenter, text)
-
-                # --- POC Border ---
-                if price == poc_price:
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-                    poc_pen = QtGui.QPen(QtGui.QColor("yellow"), 2)
-                    painter.setPen(poc_pen)
-                    painter.drawRect(cell_rect)
-                    painter.setPen(QtGui.QPen(QtGui.QColor(100, 100, 100))) # Reset pen
+        x_min = self.x_indices[0]
+        x_max = self.x_indices[-1]
+        y_min = self.lows.min()
+        y_max = self.highs.max()
+        return QtCore.QRectF(x_min, y_min, x_max - x_min, y_max - y_min)
+    
+    def update_bar(self):
+        pass
 
 class FootprintChart(pg.GraphicsLayoutWidget):
-    def __init__(self,data=None, parent=None, show=False, size=None, title=None, **kargs):
+    def __init__(self,ohlcv=None, parent=None, show=False, size=None, title=None, **kargs):
         super().__init__(parent, show, size, title, **kargs)
+        self.ohlcv = ohlcv
         self.ci.layout.setSpacing(0)
         self.ci.setContentsMargins(0,0,0,0)
 
-        date_axis = MinuteAxisItem()
-        view_box = FixedScaleViewBox()
-        self.plot = self.addPlot(row=0, col=0, axisItems={'bottom':date_axis}, viewBox=view_box)
+        self.date_axis = MinuteAxisItem(self.ohlcv['time'])
+        self.view_box = FixedScaleViewBox()
+        self.plot = self.addPlot(row=0, col=0, axisItems={'bottom':self.date_axis}, viewBox=self.view_box)
         self.plot.showGrid(x=True, y=True, alpha=0.3)
         self.plot.setLabel('left', 'Price')
-        self.plot.setLabel('bottom', 'Time')
 
-        self.fp = FootprintItem()
-        self.plot.addItem(self.fp)
+        self.ohlcv[['open', 'high', 'low', 'close']] = self.ohlcv[['open', 'high', 'low', 'close']].astype(float)
+        self.candle_item = CandleStickItem(self.ohlcv)
+        self.plot.addItem(self.candle_item)
+        self.view_box.sigXRangeChanged.connect(self.update_y_range)
+
+        # Flag to control auto-scrolling
+        self.auto_scroll = True
+        # If user scrolls away, disable auto-scroll
+        self.view_box.sigXRangeChanged.connect(self.user_scrolled)
+        self.update_x_limits()
+
+    def user_scrolled(self):
+        """When the user manually pans/zooms, disable auto-scrolling."""
+        x_range = self.view_box.viewRange()[0]
+        self.auto_scroll = x_range[1] > (len(self.ohlcv) - 3)
+
+    def update_x_limits(self):
+        self.view_box.setLimits(xMax=len(self.ohlcv)+6)
+    def update_y_range(self):
+        """This function is called when the user pans or zooms."""
+        vb = self.plot.getViewBox()
+        x_min, x_max = vb.viewRange()[0]
+        
+        # Convert float range to integer indices
+        start_idx = max(0, int(x_min))
+        end_idx = min(len(self.ohlcv), int(x_max) + 1)
+        
+        # Slice the DataFrame to get only the visible data
+        visible_data = self.ohlcv.iloc[start_idx:end_idx]
+        
+        if visible_data.empty:
+            return # Do nothing if no data is visible
+            
+        # Find the min and max of the 'low' and 'high' columns for the visible data
+        y_min = visible_data['low'].min()
+        y_max = visible_data['high'].max()
+        
+        # Add some padding to the top and bottom
+        padding = (y_max - y_min) * 0.1
+        vb.setYRange(y_min - padding, y_max + padding, padding=0)
+
+
+    

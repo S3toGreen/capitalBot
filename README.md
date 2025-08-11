@@ -64,9 +64,9 @@ engine.start()
 ### 🔧 Roadmap
 
 * [ ] **Built‑in Algo Trading App:** Develop a simple UI for strategy live monitoring. (optionally strategy configuration)
-* [ ] **WebGL\WebGPU Migration:** Take advantage of browser GPU framework, cross-platform.
-* [ ] **Plugin System:** Allow community‐driven extensions for custom indicators and data sources.
+* [ ] **WebGL\WebGPU Migration:** Take advantage of browser GPU framework, cross-platform.(FastAPI, websocket)
 * [ ] **Rust Migration:** Port hot‐path functions (`OnNotifyTicksLONG`, `_agg_tick`) to Rust for sub‐millisecond throughput while retaining Python bindings. simd, avx2
+* [ ] **Plugin System:** Allow community‐driven extensions for custom indicators and data sources.
 
 ### 🤝 Contributing
 

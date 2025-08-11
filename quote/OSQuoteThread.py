@@ -16,9 +16,9 @@ from quote.tools import Bar, Tick
 @njit(cache=True, fastmath=True)
 def update_depth(dep, args):
     for i in range(10):
-        dep[0, i][0] = args[i * 2]/100        # bid price
+        dep[0, i][0] = args[i * 2]      # bid price
         dep[0, i][1] = args[i * 2 + 1]        # bid qty
-        dep[1, i][0] = args[20 + i * 2]/100   # ask price
+        dep[1, i][0] = args[20 + i * 2] # ask price
         dep[1, i][1] = args[20 + i * 2 + 1]   # ask qty
 
 class SKOSQuoteLibEvent(QObject):
@@ -95,11 +95,12 @@ class SKOSQuoteLibEvent(QObject):
     def _agg_tick(self, symbol, ticks:list):
         # TODO push the last bar EOD
         ticks.sort(key=lambda t:t.ptr)
+        current_bar_time = self.orderflow[symbol][-1].time if self.orderflow[symbol] else None
         for t in ticks:
-            bar_time = t.time.floor('min') #+ pd.Timedelta(minutes=1) # start of minute
-            minute_changed = not self.orderflow[symbol] or self.orderflow[symbol][-1].time != bar_time
+            minute_changed = not current_bar_time or t.time >= current_bar_time + pd.Timedelta(minutes=1)
             last:Bar = None
             if minute_changed:
+                current_bar_time = bar_time = t.time.replace(second=0) #+ pd.Timedelta(minutes=1) # start of minute
                 self.producer.lastest_ptr[symbol] = t.ptr
                 tmp = Bar(bar_time, t.price, t.price, t.price, t.price, t.qty)
                 self.orderflow[symbol].append(tmp)
@@ -192,7 +193,9 @@ class SKOSQuoteLibEvent(QObject):
                 side = 1
             elif nClose < mid_price:
                 side = -1
+    
         tick = Tick(ptr=nPtr, time=self._to_timestamp(nDate,nTime), side=side, price=nClose/100, qty=nQty)
+        # print(tick,f'bid:{bid},ask:{ask}',self.market_dep[symbol])
         self.producer.pub_ticks(symbol, tick)# print(symbol,tick)
         self.tick_buffer[symbol].append(tick)
 
@@ -209,7 +212,6 @@ class SKOSQuoteLibEvent(QObject):
         # self.backfill_symbols.add(symbol)
         tick = Tick(ptr=nPtr, time=self._to_timestamp(nDate,nTime), side=0, price=nClose/100, qty=nQty)
         self.tick_buffer[symbol].append(tick)
-
         self.backfill_timer.start()
     
     def OnNotifyBest10NineDigitLONG(self, nStockidx, *args):

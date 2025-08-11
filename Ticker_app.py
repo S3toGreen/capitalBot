@@ -5,14 +5,14 @@ from PySide6.QtWidgets import * #QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
 from PySide6.QtCore import QThread, Slot
 from PySide6.QtGui import QColorConstants, QTextCharFormat, QFont, QTextCursor, QIcon, QAction
 import pyqtgraph as pg
-import redisworker.Config as Config
 from windows_toasts import WindowsToaster, Toast, ToastScenario
-import faulthandler
-faulthandler.enable()
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 pg.setConfigOptions(useOpenGL=True)
 
-#累計口/筆差, 大/散單(Accumulate), Volume Profile 
 ANSI_COLOR={-1:QColorConstants.Red,1:QColorConstants.Green,0:QColorConstants.White}
 
 class MainWindow(QMainWindow):
@@ -66,9 +66,9 @@ class MainWindow(QMainWindow):
         layout2.addLayout(self.form,1)
         layout2.addWidget(self.msg2,2)
 
-        id.setText(Config.id)
+        id.setText(os.getenv('BROKER_ID'))
         id.returnPressed.connect(self.run_init)
-        passwd.setText(Config.passwd)
+        passwd.setText(os.getenv('BROKER_PASS'))
         passwd.returnPressed.connect(self.run_init)
         
         # Logging

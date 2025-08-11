@@ -1,11 +1,13 @@
 from clickhouse_connect import get_client
 from .FootprintChart import FootprintChart
-from redisworker.Config import pw
+from dotenv import load_dotenv
+import os
+load_dotenv()
 import sys
 import numpy as np
 import pandas as pd
 
-client = get_client(host='localhost', username='client', password=pw, compression=True)
+client = get_client(host='localhost', username='client', password=os.getenv("CLIENT_PASS"), compression=True)
 
 symbol='MTX00'
 query_fp = f"""
@@ -14,16 +16,18 @@ query_fp = f"""
     WHERE symbol = '{symbol}' and time>today()
     ORDER BY time
 """
-query_ohlcv = f"""
+query_ohlcv = f"""select time, open, high, low, close, vol
+    FROM (
     SELECT time,open,high,low,close,vol
     FROM ohlcvDM
-    WHERE symbol = '{symbol}' and time>today()
-    ORDER BY time
+    WHERE symbol = '{symbol}' 
+    ORDER BY time desc limit 1000
+    ) ORDER BY time
 """
-fp = client.query_df(query_fp).set_index(['time','price'])
-ohlcv = client.query_df(query_ohlcv).set_index('time')
+fp = client.query_df(query_fp)
+ohlcv = client.query_df(query_ohlcv)
 print("----------- Original DataFrame -----------")
-print(fp,ohlcv)
+# print(fp,ohlcv)
 
 # 2. Select relevant columns and explode the 'orderflow' list
 # This creates a new row for each price level
@@ -49,8 +53,8 @@ if __name__=='__main__':
     app = QApplication([])
     main = QMainWindow()
 
-    # chart = FootprintChart(title='fp test',data=bars)
-    # main.setCentralWidget(chart)
+    chart = FootprintChart(title='fp test',ohlcv=ohlcv)#,fp=fp, symbol=symbol)
+    main.setCentralWidget(chart)
     main.show()
     sys.exit(app.exec())
     # chart.update_data()

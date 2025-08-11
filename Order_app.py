@@ -4,9 +4,11 @@ from SignalManager import SignalManager
 from PySide6.QtWidgets import * #QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QFormLayout, QCheckBox, QPlainTextEdit
 from PySide6.QtCore import QThread, Slot
 from PySide6.QtGui import QColorConstants, QTextCharFormat, QFont, QTextCursor, QIcon, QAction
-import redisworker.Config as Config
+# import redisworker.Config as Config
 from windows_toasts import WindowsToaster, Toast, ToastScenario
-
+from dotenv import load_dotenv
+import os
+load_dotenv()
 ANSI_COLOR={-1:QColorConstants.Red,1:QColorConstants.Green,0:QColorConstants.White}
 
 class MainWindow(QMainWindow):
@@ -51,9 +53,9 @@ class MainWindow(QMainWindow):
         self.form.addRow(self.debug)
         self.debug.checkStateChanged.connect(self.debug_trig)
         layout.addLayout(self.form,1)
-        id.setText(Config.id)
+        id.setText(os.getenv('BROKER_ID'))
         id.returnPressed.connect(self.run_init)
-        passwd.setText(Config.passwd)
+        passwd.setText(os.getenv('BROKER_PASS'))
         passwd.returnPressed.connect(self.run_init)
         
         # Logging
@@ -115,7 +117,7 @@ class MainWindow(QMainWindow):
         self.broker.update_debug()
 
     def run_init(self):
-        res = self.broker.login(self.form.itemAt(1).widget().text(), self.form.itemAt(3).widget().text())
+        res = self.broker.login(self.form.itemAt(1).widget().text(), self.form.itemAt(3).widget().text(), 'N')
         if res:
             return
         self.debug.setDisabled(True)

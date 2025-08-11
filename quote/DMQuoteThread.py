@@ -95,15 +95,18 @@ class SKQuoteLibEvent(QObject):
     def _agg_tick(self, symbol, ticks:list):
         # TODO push the last bar EOD
         ticks.sort(key=lambda t:t.ptr)
+        current_bar_time = self.orderflow[symbol][-1].time if self.orderflow[symbol] else None
         for t in ticks:
-            bar_time = t.time.floor('min') #+ pd.Timedelta(minutes=1)
-            minute_changed = not self.orderflow[symbol] or self.orderflow[symbol][-1].time != bar_time
+            # bar_time = t.time.floor('min') #+ pd.Timedelta(minutes=1)
+            minute_changed = not current_bar_time or t.time >= current_bar_time + pd.Timedelta(minutes=1)
             last:Bar = None
             if minute_changed:
+                current_bar_time = bar_time = t.time.replace(second=0)
                 self.producer.lastest_ptr[symbol] = t.ptr
                 tmp = Bar(bar_time, t.price, t.price, t.price, t.price, t.qty)
                 self.orderflow[symbol].append(tmp)
                 last = self.orderflow[symbol][-1]
+                # print(bar_time)
             else: 
                 last = self.orderflow[symbol][-1]
                 if t.price>last.high:
@@ -177,6 +180,7 @@ class SKQuoteLibEvent(QObject):
         print(msg)
         
     def OnNotifyKLineData(self, bstrStockNo, bstrData):
+        # backfill data 8:00~14:45
         pass
 
     def OnNotifyTicksLONG(self, sMarketNo, nIndex, nPtr, nDate, nTime, nTimemillismicros, nBid, nAsk, nClose, nQty, nSimulate):

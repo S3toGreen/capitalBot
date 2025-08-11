@@ -4,11 +4,11 @@ import comtypes.client as cc
 # cc.GetModule(r'./x64/SKCOM.dll')
 import comtypes.gen.SKCOMLib as sk
 import numpy as np
-import pythoncom
+# import pythoncom
 from SignalManager import SignalManager
 from quote.DMQuoteThread import DomesticQuote
 from quote.OSQuoteThread import OverseaQuote
-from redisworker.AsyncWorker import AsyncWorker
+import threading
 
 # Simulated trading or dry run
 # work flow send order to broker class  
@@ -112,9 +112,9 @@ class Broker(QObject):
         self.debug_state = False
         self.update_debug()
 
-    def login(self, acc, passwd):
+    def login(self, acc, passwd, setQuote='Y'):
         # nCode = self.skC.SKCenterLib_Login(acc, passwd)
-        nCode = self.skC.SKCenterLib_LoginSetQuote(acc, passwd,'Y')
+        nCode = self.skC.SKCenterLib_LoginSetQuote(acc, passwd, setQuote)
 
         msg = "【Login】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
         if nCode==0:
@@ -131,7 +131,6 @@ class Broker(QObject):
             msg = "【SetDebug】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
             self.signals.log_sig.emit(msg)
 
-    
 
 class QuoteBroker(Broker):
     def __init__(self, *args, **kwargs):
@@ -164,6 +163,8 @@ class QuoteBroker(Broker):
         return
     
 class OrderBroker(Broker):
+    # run a api service to handle order
+    from redisworker.AsyncWorker import AsyncWorker
     from redisworker.Receiver import DataReceiver
 
     def __init__(self, *args, **kwargs):
@@ -173,12 +174,12 @@ class OrderBroker(Broker):
         self.SKOrderLibEventHandler = cc.GetEvents(self.skO, SKOrderEvent)
 
     def init(self):
-        # self.worker = AsyncWorker()
-        # self.orderSub = DataReceiver.create(self.worker, ['order:*'])
-        # self.orderSub.message_received.connect(self._handle_order)
-
         self.skR.SKReplyLib_ConnectByID(self.ID)
         self.order_init()
+
+        self.worker = self.AsyncWorker()
+        self.orderSub = self.DataReceiver.create(self.worker, ['order:*'])
+        self.orderSub.message_received.connect(self._handle_order)
 
     def order_init(self):
         nCode = self.skO.SKOrderLib_Initialize()
@@ -224,8 +225,8 @@ class OrderBroker(Broker):
     @Slot(str,str,dict)
     def _handle_order(self, pattern, channel, data):
         # so far it only subscribe order channel
-        print('order msg:', data)
-        self.processOrder(data)
+        print('Order command:', data)
+        # self.processOrder(data)
 
     def stop(self):   
         if hasattr(self, 'orderSub'):

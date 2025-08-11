@@ -1,4 +1,3 @@
-
 import json, asyncio
 import pandas as pd
 from collections import defaultdict
@@ -6,7 +5,10 @@ from collections import defaultdict
 # from AsyncWorker import AsyncWorker
 from clickhouse_connect import get_async_client
 from clickhouse_connect.driver.exceptions import ClickHouseError
-from .Config import passwd
+# from .Config import passwd
+from dotenv import load_dotenv
+import os
+load_dotenv()
 from redis.asyncio import Redis
 from itertools import dropwhile
 
@@ -18,7 +20,7 @@ class DataProducer:
         self.lastest_ptr = defaultdict(int)
         self.ticks_buf=defaultdict(list)
         self.lastest_bar = {}
-        self.bars_buf=[]
+        # self.bars_buf=[]
         self.db = db
 
     @classmethod
@@ -26,7 +28,7 @@ class DataProducer:
         return asyncio.run_coroutine_threadsafe(cls.create_async(market,worker), worker.loop).result()
     @classmethod
     async def create_async(cls, market, worker):
-        db = await get_async_client(host='localhost',user='admin',password=passwd,compression=True)
+        db = await get_async_client(host='localhost',user='admin',password=os.getenv('BROKER_PASS'),compression=True)
         redis = Redis(decode_responses=True,
                 socket_connect_timeout=3,
                 socket_timeout=6,
@@ -51,13 +53,14 @@ class DataProducer:
 
     def push_bars(self, symbol, bars:list):
         self.async_worker.submit(self.push_bars_async(symbol, bars))
+        del bars
     async def push_bars_async(self, symbol, bars:list):
         # push to ohlcv and fp separately
         m_type = 1 if self.market=='OS' else 2
 
         if symbol not in self.lastest_bar:
-            self.lastest_bar[symbol] = self.db.query(f"SELECT time FROM ohlcv{self.market} WHERE symbol='{symbol}' ORDER BY time DESC LIMIT 1").result_rows
-            self.lastest_bar[symbol] = pd.Timestamp(self.lastest_bar[symbol][0][0]) if self.lastest_bar[symbol] else pd.Timestamp(0,tz=bars[0].time.tz)
+            ts = (await self.db.query(f"SELECT time FROM ohlcv{self.market} WHERE symbol='{symbol}' ORDER BY time DESC LIMIT 1")).result_rows
+            self.lastest_bar[symbol] = pd.Timestamp(ts[0][0]) if ts else pd.Timestamp(0,tz=bars[0].time.tz)
 
         new_bars = dropwhile(lambda b: b.time <= self.lastest_bar[symbol], bars)
 
@@ -88,6 +91,7 @@ class DataProducer:
         await self.redis.publish(pub_key, json.dumps(tick.to_dict()))
 
     def insert_ticks(self):
+        return self.ticks_buf.clear()
         asyncio.run_coroutine_threadsafe(self.insert_ticks_async(), self.async_worker.loop).result()
     async def insert_ticks_async(self):
         rows=[]
