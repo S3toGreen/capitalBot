@@ -16,9 +16,9 @@ from quote.tools import Tick, Bar
 @njit(cache=True, fastmath=True)
 def update_depth(dep, args):
     for i in range(5):
-        dep[0, i][0] = args[i * 2]/100      # bid price
+        dep[0, i][0] = args[i * 2]     # bid price
         dep[0, i][1] = args[i * 2 + 1]      # bid qty
-        dep[1, i][0] = args[12 + i * 2]/100 # ask price
+        dep[1, i][0] = args[12 + i * 2] # ask price
         dep[1, i][1] = args[12 + i * 2 + 1] # ask qty
 
 class SKQuoteLibEvent(QObject):
