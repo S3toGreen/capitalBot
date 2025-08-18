@@ -4,14 +4,10 @@ from SignalManager import SignalManager
 from PySide6.QtWidgets import * #QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QFormLayout, QCheckBox, QPlainTextEdit
 from PySide6.QtCore import QThread, Slot
 from PySide6.QtGui import QColorConstants, QTextCharFormat, QFont, QTextCursor, QIcon, QAction
-import pyqtgraph as pg
-from windows_toasts import WindowsToaster, Toast, ToastScenario
+# from windows_toasts import WindowsToaster, Toast, ToastScenario
 from dotenv import load_dotenv
 import os
-
 load_dotenv()
-
-pg.setConfigOptions(useOpenGL=True)
 
 ANSI_COLOR={-1:QColorConstants.Red,1:QColorConstants.Green,0:QColorConstants.White}
 
@@ -34,8 +30,8 @@ class MainWindow(QMainWindow):
         self.broker_thread.finished.connect(self.broker.stop)
         # self.volprof = VolumeVisualize(self)
         # self.watchlist = WatchList(self)
-        self.toaster=WindowsToaster('Tickers')
-        self.newToast = Toast(scenario=ToastScenario.Reminder,suppress_popup=False)
+        # self.toaster=WindowsToaster('Tickers')
+        # self.newToast = Toast(scenario=ToastScenario.Reminder,suppress_popup=False)
 
     def init_ui(self):
         self.resize(600,600)

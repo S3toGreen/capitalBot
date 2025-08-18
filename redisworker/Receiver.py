@@ -3,9 +3,7 @@ import asyncio
 from clickhouse_connect import get_async_client
 from .AsyncWorker import AsyncWorker
 from PySide6.QtCore import QObject, Signal, Slot
-import pyqtgraph as pg
 from redis.asyncio import Redis
-import concurrent.futures
 
 class DataReceiver(QObject):
     message_received = Signal(str,str,dict)

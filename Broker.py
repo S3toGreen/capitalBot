@@ -1,14 +1,10 @@
-import pandas as pd
 from PySide6.QtCore import *
 import comtypes.client as cc
 # cc.GetModule(r'./x64/SKCOM.dll')
 import comtypes.gen.SKCOMLib as sk
-import numpy as np
-# import pythoncom
 from SignalManager import SignalManager
 from quote.DMQuoteThread import DomesticQuote
 from quote.OSQuoteThread import OverseaQuote
-import threading
 
 # Simulated trading or dry run
 # work flow send order to broker class  

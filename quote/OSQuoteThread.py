@@ -8,9 +8,10 @@ import asyncio, datetime
 from redisworker.Producer import DataProducer
 from redisworker.AsyncWorker import AsyncWorker
 from collections import defaultdict
-from sortedcontainers import SortedDict
+# from sortedcontainers import SortedDict
 from numba import njit
 import pythoncom
+import ctypes
 from quote.tools import Bar, Tick
 
 @njit(cache=True, fastmath=True)
