@@ -95,18 +95,17 @@ class SKQuoteLibEvent(QObject):
     def _agg_tick(self, symbol, ticks:list):
         # TODO push the last bar EOD
         ticks.sort(key=lambda t:t.ptr)
-        current_bar_time = self.orderflow[symbol][-1].time if self.orderflow[symbol] else None
+        bar_time_end = (self.orderflow[symbol][-1].time + pd.Timedelta(minutes=1)) if self.orderflow[symbol] else None
         for t in ticks:
-            # bar_time = t.time.floor('min') #+ pd.Timedelta(minutes=1)
-            minute_changed = not current_bar_time or t.time >= current_bar_time + pd.Timedelta(minutes=1)
+            minute_changed = not bar_time_end or t.time >= bar_time_end
             last:Bar = None
             if minute_changed:
-                current_bar_time = bar_time = t.time.replace(second=0)
+                bar_time = t.time.replace(second=0)
+                bar_time_end = bar_time + pd.Timedelta(minutes=1)
                 self.producer.lastest_ptr[symbol] = t.ptr
                 tmp = Bar(bar_time, t.price, t.price, t.price, t.price, t.qty)
                 self.orderflow[symbol].append(tmp)
                 last = self.orderflow[symbol][-1]
-                # print(bar_time)
             else: 
                 last = self.orderflow[symbol][-1]
                 if t.price>last.high:
@@ -146,8 +145,8 @@ class SKQuoteLibEvent(QObject):
         print("------DM MARKET CLOSED------")
 
     def fetch_ptr(self, stocklist:list[str]):
-        if not self.ptr:
-            self.ptr = self.producer.get_ptr(stocklist)
+        # if not self.ptr:
+        self.ptr = self.producer.get_ptr(stocklist)
 
     def OnConnection(self, nKind, nCode): 
         status = nKind-3000
@@ -162,13 +161,18 @@ class SKQuoteLibEvent(QObject):
         self.status = status
 
     def OnNotifyServerTime(self, sHour, sMinute, sSecond, nTotal): 
-        if sSecond or sMinute%15:
+        if sSecond or sMinute%30:
             return
         if sHour==5 and sMinute:
             self.signals.OS_reset.emit()
-        if sHour==14:
+            # reset stock ptr
+            for symbol in self.ptr.keys():
+                if symbol.isdigit():
+                    self.ptr[symbol] = 0
+                    self.last_ptr[symbol] = 0
+        if sHour==14 and sMinute:
             if self.ptr:
-                self.ptr=defaultdict(int)
+                self.ptr.clear()
                 self.last_ptr.clear()
                 self.producer.insert_ticks()
                 if self.orderflow:
@@ -189,7 +193,7 @@ class SKQuoteLibEvent(QObject):
             pSKStock = sk.SKSTOCKLONG()
             pSKStock, _= self.skQ.SKQuoteLib_GetStockByIndexLONG(sMarketNo, nIndex, pSKStock)
             self.stockid[nIndex] = symbol = pSKStock.bstrStockNo
-        if nSimulate or nPtr<self.ptr[symbol]:
+        if nSimulate or nPtr<self.ptr.get(symbol,0):
             return
         if not self.live_timer.isActive() and not self.backfill_timer.isActive():
             self.live_timer.start()
@@ -211,7 +215,7 @@ class SKQuoteLibEvent(QObject):
             pSKStock = sk.SKSTOCKLONG()
             pSKStock, _= self.skQ.SKQuoteLib_GetStockByIndexLONG(sMarketNo, nIndex, pSKStock)
             self.stockid[nIndex]= symbol = pSKStock.bstrStockNo
-        if nSimulate or nPtr<self.ptr[symbol]:
+        if nSimulate or nPtr<self.ptr.get(symbol,0):
             return
         self.live_timer.stop()
         mid_price = (nAsk+nBid)/2
@@ -256,7 +260,7 @@ class SKQuoteLibEvent(QObject):
         data={
             'avg_order_b':nBuyTotalQty/nBuyTotalCount,
             "avg_order_s": nSellTotalQty/nSellTotalCount,
-            "order_sqty":nSellTotalQty,
+            # "order_sqty":nSellTotalQty,
             "deal_bc": nBuyDealTotalCount,
             "deal_sc": nSellDealTotalCount
         }
@@ -272,7 +276,7 @@ class SKQuoteLibEvent(QObject):
             'O':pSKStock.nOpen/(10**pSKStock.sDecimal),
             'H':pSKStock.nHigh/(10**pSKStock.sDecimal),
             'L':pSKStock.nLow/(10**pSKStock.sDecimal),
-            'Vol':pSKStock.nTQty,'YVol':pSKStock.nYQty,'Ref':pSKStock.nRef/(10**pSKStock.sDecimal),'OI':pSKStock.nFutureOI, 'ID':pSKStock.bstrStockNo}
+            'Vol':pSKStock.nTQty,'YVol':pSKStock.nYQty,'Ref':pSKStock.nRef/(10**pSKStock.sDecimal),'OI':pSKStock.nFutureOI, 'ID':pSKStock.bstrStockNo, "aggBuy":pSKStock.nTBc,"aggSell":pSKStock.nTAc}
         # self.signals.quote_update.emit(pSKStock.bstrStockNo, data, 'DM')
         self.producer.pub_quote(data)
 
@@ -293,7 +297,7 @@ class DomesticQuote(QObject):
         self.skC = skC
         self.retry_count = 0
         self.signals = SignalManager.get_instance()
-        self.symlist = ['TX00', 'MTX00'] # this is for tick
+        self.symlist = ['TX00', 'MTX00', '2330', '2454','2317','2308'] # this is for tick
 
     def run(self):
         pythoncom.CoInitialize()
@@ -373,7 +377,7 @@ class DomesticQuote(QObject):
         # could only subscribe 100 stock 
         pg=-1
         ls = self.symlist.copy()
-        ls.extend(['TSEA','OTCA','2330','2317','2454'])#'CYF00' # Additional quote
+        ls.extend(['TSEA','OTCA'])#'CYF00' # Additional quote
         for i in range(0,len(ls),100):
             tmp = ','.join(ls[i:i+100])
             psPageNo, nCode = self.skQ.SKQuoteLib_RequestStocks(pg, tmp)

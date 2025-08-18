@@ -26,7 +26,6 @@ query_ohlcv = f"""select time, open, high, low, close, vol
 """
 fp = client.query_df(query_fp)
 ohlcv = client.query_df(query_ohlcv)
-print("----------- Original DataFrame -----------")
 # print(fp,ohlcv)
 
 # 2. Select relevant columns and explode the 'orderflow' list

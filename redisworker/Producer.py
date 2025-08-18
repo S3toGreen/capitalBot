@@ -57,7 +57,7 @@ class DataProducer:
     async def push_bars_async(self, symbol, bars:list):
         # push to ohlcv and fp separately
         m_type = 1 if self.market=='OS' else 2
-
+        symbol = symbol[:2]+'0000' if self.market=='OS' else symbol
         if symbol not in self.lastest_bar:
             ts = (await self.db.query(f"SELECT time FROM ohlcv{self.market} WHERE symbol='{symbol}' ORDER BY time DESC LIMIT 1")).result_rows
             self.lastest_bar[symbol] = pd.Timestamp(ts[0][0]) if ts else pd.Timestamp(0,tz=bars[0].time.tz)
@@ -109,7 +109,7 @@ class DataProducer:
                 print('clickhouseError:', e)
                 raise
 
-    def get_ptr(self, symbols:list)-> dict[str,int]:
+    def get_ptr(self, symbols:list)-> dict:
         # return self.async_worker.submit(self.get_ptr_async(symbols)).result()
         return asyncio.run_coroutine_threadsafe(self.get_ptr_async(symbols), self.async_worker.loop).result()
     async def get_ptr_async(self, symbols: list[str]) -> dict[str,int]:

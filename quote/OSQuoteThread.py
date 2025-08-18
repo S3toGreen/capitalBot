@@ -95,12 +95,13 @@ class SKOSQuoteLibEvent(QObject):
     def _agg_tick(self, symbol, ticks:list):
         # TODO push the last bar EOD
         ticks.sort(key=lambda t:t.ptr)
-        current_bar_time = self.orderflow[symbol][-1].time if self.orderflow[symbol] else None
+        bar_time_end = (self.orderflow[symbol][-1].time+pd.Timedelta(minutes=1)) if self.orderflow[symbol] else None
         for t in ticks:
-            minute_changed = not current_bar_time or t.time >= current_bar_time + pd.Timedelta(minutes=1)
+            minute_changed = not bar_time_end or t.time >= bar_time_end
             last:Bar = None
             if minute_changed:
-                current_bar_time = bar_time = t.time.replace(second=0) #+ pd.Timedelta(minutes=1) # start of minute
+                bar_time = t.time.replace(second=0) #+ pd.Timedelta(minutes=1) # start of minute
+                bar_time_end = bar_time + pd.Timedelta(minutes=1)
                 self.producer.lastest_ptr[symbol] = t.ptr
                 tmp = Bar(bar_time, t.price, t.price, t.price, t.price, t.qty)
                 self.orderflow[symbol].append(tmp)
@@ -144,9 +145,9 @@ class SKOSQuoteLibEvent(QObject):
         print("------OS MARKET CLOSED------")
 
     def fetch_ptr(self, stocklist:list[str]):
-        if not self.ptr:
-            keys = [i.split(',')[1] for i in stocklist]
-            self.ptr = self.producer.get_ptr(keys)
+        # if not self.ptr:
+        keys = [i.split(',')[1] for i in stocklist]
+        self.ptr = self.producer.get_ptr(keys)
 
     def OnConnect(self, nKind, nCode): 
         status = nKind-3000
@@ -162,7 +163,7 @@ class SKOSQuoteLibEvent(QObject):
     @Slot()
     def reset_ptr(self):
         if self.ptr:
-            self.ptr=defaultdict(int)
+            self.ptr.clear()
             self.last_ptr.clear()
             self.producer.insert_ticks()
             if self.orderflow:
@@ -176,7 +177,7 @@ class SKOSQuoteLibEvent(QObject):
             pSKStock = sk.SKFOREIGNLONG()
             pSKStock, _ = self.skOSQ.SKOSQuoteLib_GetStockByIndexLONG(nIndex, pSKStock)
             self.stockid[nIndex] = symbol = pSKStock.bstrStockNo
-        if nPtr<self.ptr[symbol]:
+        if nPtr<self.ptr.get(symbol,0):
             return
 
         if not self.live_timer.isActive() and not self.backfill_timer.isActive():
@@ -205,7 +206,7 @@ class SKOSQuoteLibEvent(QObject):
             pSKStock = sk.SKFOREIGNLONG()
             pSKStock, nCode = self.skOSQ.SKOSQuoteLib_GetStockByIndexLONG(nIndex, pSKStock)
             self.stockid[nIndex] = symbol = pSKStock.bstrStockNo
-        if nPtr<self.ptr[symbol]:
+        if nPtr<self.ptr.get(symbol,0):
             return
         
         self.live_timer.stop()

@@ -17,9 +17,13 @@ class AsyncWorker:
         self.loop.create_task(self._consume_queue())
         self.loop.run_forever()
 
+        self.loop.close()
+
     async def _consume_queue(self):
-        while self.running:
+        while True:
             coro = await self.queue.get()
+            if coro is None:
+                break
             try:
                 await coro
             except Exception as e:
@@ -36,6 +40,6 @@ class AsyncWorker:
     #     return future
 
     def stop(self):
-        self.running = False
+        self.loop.call_soon_threadsafe(self.queue.put_nowait, None)
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join()

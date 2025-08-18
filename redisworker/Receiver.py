@@ -9,46 +9,51 @@ import concurrent.futures
 
 class DataReceiver(QObject):
     message_received = Signal(str,str,dict)
-    def __init__(self, worker:AsyncWorker, channels:list, redis:Redis):
+    def __init__(self, worker:AsyncWorker, redis:Redis, channels, patterns):
         super().__init__()
         self.async_worker = worker
         self.redis = redis
-        self.channels = set(channels)
+
+        self.channels = set(channels) if channels else set()
+        self.patterns = set(patterns) if patterns else set()
 
         self._pubsub = None
         self._task = None
         self.start()
 
     @classmethod
-    def create(cls, worker, channels):
-        return asyncio.run_coroutine_threadsafe(cls.create_async(worker,channels), worker.loop).result()
+    def create(cls, worker, channels:list=None,patterns:list=None):
+        return asyncio.run_coroutine_threadsafe(cls.create_async(worker,channels, patterns), worker.loop).result()
     @classmethod
-    async def create_async(cls, worker, channels):
+    async def create_async(cls, worker, channels=None, patterns=None):
         redis = Redis(decode_responses=True,
                 socket_connect_timeout=3,
                 socket_timeout=6,
                 socket_keepalive=True,
                 health_check_interval=30
             )
-        await redis.ping()
-        return cls(worker, channels, redis)
+        return cls(worker, redis, channels, patterns)
     
     def start(self):
+        if self._pubsub is None:
+            self._pubsub = self.redis.pubsub()
+
         if not self._task or self._task.done():
             future = asyncio.run_coroutine_threadsafe(self._listen_async(), self.async_worker.loop)
             self._task = asyncio.wrap_future(future)
 
     async def _listen_async(self):
-        self._pubsub = self.redis.pubsub()
-        await self._pubsub.psubscribe(*self.channels)
+        if self.patterns:
+            await self._pubsub.psubscribe(*self.patterns)
+        if self.channels:
+            await self._pubsub.subscribe(*self.channels)
         try:
             async for msg in self._pubsub.listen():
                 if msg["type"] not in ("pmessage", "message"):
                     continue
                 try:
-                    data = json.loads(msg["data"])
-                    
-                    self.message_received.emit(msg.get('pattern'), msg['channel'], data)
+                    data = json.loads(msg.get("data"))
+                    self.message_received.emit(msg.get('pattern'), msg.get('channel'), data)
                 except Exception as e:
                     print(f"[RedisSubscriber] error: {e}")
                     continue
@@ -59,9 +64,13 @@ class DataReceiver(QObject):
         if not patterns:
             return
         if self._pubsub and not self._task.done():
-            coro = self._pubsub.psubscribe(*patterns)
-            asyncio.run_coroutine_threadsafe(coro, self.async_worker.loop)
-            self.channels.update(patterns)
+            for pattern in patterns:
+                if pattern in self.patterns:
+                    print(f"Pattern {pattern} already exists, skipping.")
+                    continue
+                coro = self._pubsub.psubscribe(pattern)
+                asyncio.run_coroutine_threadsafe(coro, self.async_worker.loop)
+                self.patterns.update(patterns)
         else:
             print("Warning: Listener is not running.")
     def remove_patterns(self, *patterns:str):
@@ -74,14 +83,17 @@ class DataReceiver(QObject):
         else:
             print("Warning: Listener is not running.")
 
-    async def add_channels(self, *channels:str):
+    def add_channels(self, *channels:str):
         if not channels:
             return
         if self._pubsub and not self._task.done():
-            coro = self._pubsub.subscribe(*channels)
-            # asyncio.run_coroutine_threadsafe(coro, self.async_worker.loop)
-            await coro
-            self.channels.update(channels)
+            for channel in channels:
+                if channel in self.channels:
+                    print(f"Channel {channel} already exists, skipping.")
+                    continue
+                coro = self._pubsub.subscribe(*channels)
+                asyncio.run_coroutine_threadsafe(coro, self.async_worker.loop)
+                self.channels.update(channels)
         else:
             print("Warning: Listener is not running.")
 

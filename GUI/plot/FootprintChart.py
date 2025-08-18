@@ -1,6 +1,9 @@
 import pyqtgraph as pg
 from PySide6 import QtGui, QtCore
 import numpy as np
+import pandas as pd
+from redisworker.Receiver import DataReceiver
+from redisworker.AsyncWorker import AsyncWorker
 
 pg.setConfigOptions(imageAxisOrder='row-major',
                     useOpenGL=False, antialias=False)
@@ -62,6 +65,9 @@ class CandleStickItem(pg.GraphicsObject):
         self.pen_red = pg.mkPen('r')
         self.brush_green = pg.mkBrush('g')
         self.brush_red = pg.mkBrush('r')
+
+        self.prepareGeometryChange()
+        self.informViewBoundsChanged()
 
     def paint(self, p, *args):
         view_box = self.getViewBox()
@@ -135,7 +141,6 @@ class CandleStickItem(pg.GraphicsObject):
                 ) for i in green_indices
             ]
             p.drawRects(rects)
-
         # Draw red bodies
         red_indices = np.where(is_red)[0]
         if len(red_indices) > 0:
@@ -163,43 +168,55 @@ class CandleStickItem(pg.GraphicsObject):
         y_max = self.highs.max()
         return QtCore.QRectF(x_min, y_min, x_max - x_min, y_max - y_min)
     
-    def update_bar(self):
+    def update_bar(self, idx, o,h,l,c):
+        self.opens[idx] = o
+        self.highs[idx] = h
+        self.lows[idx] = l
+        self.closes[idx] = c
+        self.update() # Triggers a repaint of this item
         pass
 
 class FootprintChart(pg.GraphicsLayoutWidget):
     def __init__(self,ohlcv=None, parent=None, show=False, size=None, title=None, **kargs):
         super().__init__(parent, show, size, title, **kargs)
+        self.worker = AsyncWorker()
+        self.datareceiver = DataReceiver.create(self.worker,channels=['snap:DM:MTX00'])
+        self.datareceiver.message_received.connect(self.msg_handler)
+
         self.ohlcv = ohlcv
         self.ci.layout.setSpacing(0)
         self.ci.setContentsMargins(0,0,0,0)
 
         self.date_axis = MinuteAxisItem(self.ohlcv['time'])
-        self.view_box = FixedScaleViewBox()
-        self.plot = self.addPlot(row=0, col=0, axisItems={'bottom':self.date_axis}, viewBox=self.view_box)
-        self.plot.showGrid(x=True, y=True, alpha=0.3)
-        self.plot.setLabel('left', 'Price')
+        self.price_plot = self.addPlot(row=0, col=0, axisItems={'bottom':self.date_axis}, viewBox=FixedScaleViewBox())
+        self.price_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.price_plot.setLabel('left', 'Price')
 
         self.ohlcv[['open', 'high', 'low', 'close']] = self.ohlcv[['open', 'high', 'low', 'close']].astype(float)
         self.candle_item = CandleStickItem(self.ohlcv)
-        self.plot.addItem(self.candle_item)
-        self.view_box.sigXRangeChanged.connect(self.update_y_range)
+        self.price_plot.addItem(self.candle_item)
+        self.price_plot.getViewBox().sigXRangeChanged.connect(self.update_y_range)
 
+        self.volume_plot = self.addPlot(row=1, col=0)
+        self.volume_plot.setLabel('left', 'Volume')
+        self.volume_plot.setMaximumHeight(120)
+        self.volume_plot.setXLink(self.price_plot)  # Link x-axis with the main plot
+
+        self.volume_item = pg.BarGraphItem(x=self.ohlcv.index.to_numpy(),
+                                          height=self.ohlcv['vol'].to_numpy(),
+                                          width=0.8,brush=pg.mkBrush('lightgray'))
+        self.volume_plot.addItem(self.volume_item)
         # Flag to control auto-scrolling
         self.auto_scroll = True
         # If user scrolls away, disable auto-scroll
-        self.view_box.sigXRangeChanged.connect(self.user_scrolled)
         self.update_x_limits()
 
-    def user_scrolled(self):
-        """When the user manually pans/zooms, disable auto-scrolling."""
-        x_range = self.view_box.viewRange()[0]
-        self.auto_scroll = x_range[1] > (len(self.ohlcv) - 3)
-
     def update_x_limits(self):
-        self.view_box.setLimits(xMax=len(self.ohlcv)+6)
+        self.price_plot.getViewBox().setLimits(xMax=len(self.ohlcv)+6)
+
     def update_y_range(self):
         """This function is called when the user pans or zooms."""
-        vb = self.plot.getViewBox()
+        vb = self.price_plot.getViewBox()
         x_min, x_max = vb.viewRange()[0]
         
         # Convert float range to integer indices
@@ -219,6 +236,19 @@ class FootprintChart(pg.GraphicsLayoutWidget):
         # Add some padding to the top and bottom
         padding = (y_max - y_min) * 0.1
         vb.setYRange(y_min - padding, y_max + padding, padding=0)
+        
+        # update autoscroll flag
+        x_range = vb.viewRange()[0]
+        self.auto_scroll = x_range[1] > (len(self.ohlcv) - 3)
 
-
+    def msg_handler(self, pattern, channel, data):
+        """Handles incoming messages from Redis."""
+        if not pattern:
+            # not quote
+            # channel, market, symbol = channel.split(':')
+            # if channel == 'snap':
+            #     ts= pd.Timestamp(data['time'])
+            print('channel:',data)
+        else:
+            print('pattern',data)
     
