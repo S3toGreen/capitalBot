@@ -11,14 +11,26 @@ requires-python = ">=3.13"
 dependencies = [
     "clickhouse-connect>=0.8.18",
     "comtypes>=1.4.11",
+    "msgpack>=1.1.1",
     "numba>=0.61.2",
     "pandas>=2.3.1",
+    "pyqtgraph>=0.13.7",
     "pyside6==6.9.0",
     "python-dotenv>=1.1.1",
     "pywin32>=311",
     "redis>=6.4.0",
     "setuptools>=80.9.0",
 ]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.30.1",
+]
