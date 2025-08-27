@@ -42,7 +42,7 @@ class DataProducer:
     async def pub_snap_async(self, symbol, bar):
         channel = f'snap:{self.market}:{symbol}'
         # print(f"{channel}", bar.to_json())
-        await self.redis.publish(channel, json.dumps(bar.to_dict()))
+        await self.redis.publish(channel, bar.to_bytes())
     
     def pub_quote(self, data):
         self.async_worker.submit(self.pub_quote_async(data))
