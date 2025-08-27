@@ -1,5 +1,5 @@
 from clickhouse_connect import get_client
-from .FootprintChart import FootprintChart
+from .FootprintChart import PlotWidget
 from dotenv import load_dotenv
 import os
 load_dotenv()
@@ -7,11 +7,11 @@ import sys
 import numpy as np
 import pandas as pd
 
-client = get_client(host='localhost', username='client', password=os.getenv("CLIENT_PASS"), compression=True)
+client = get_client(host='localhost', username='default', password=os.getenv("CLIENT_PASS"), compression=True)
 
 symbol='MTX00'
 query_fp = f"""
-    SELECT time, price, neutral, agg_buy, agg_sell, vol
+    SELECT time, price, vol, agg_buy-agg_sell as delta
     FROM fpDM
     WHERE symbol = '{symbol}' and time>today()
     ORDER BY time
@@ -52,7 +52,7 @@ if __name__=='__main__':
     app = QApplication([])
     main = QMainWindow()
 
-    chart = FootprintChart(title='fp test',ohlcv=ohlcv)#,fp=fp, symbol=symbol)
+    chart = PlotWidget(title='fp test',ohlcv=ohlcv)#,fp=fp, symbol=symbol)
     main.setCentralWidget(chart)
     main.show()
     sys.exit(app.exec())

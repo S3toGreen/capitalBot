@@ -6,7 +6,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from redis.asyncio import Redis
 
 class DataReceiver(QObject):
-    message_received = Signal(str,str,dict)
+    message_received = Signal(str,str,bytes)
     def __init__(self, worker:AsyncWorker, redis:Redis, channels, patterns):
         super().__init__()
         self.async_worker = worker
@@ -24,7 +24,7 @@ class DataReceiver(QObject):
         return asyncio.run_coroutine_threadsafe(cls.create_async(worker,channels, patterns), worker.loop).result()
     @classmethod
     async def create_async(cls, worker, channels=None, patterns=None):
-        redis = Redis(decode_responses=True,
+        redis = Redis(decode_responses=False,
                 socket_connect_timeout=3,
                 socket_timeout=6,
                 socket_keepalive=True,
@@ -50,8 +50,9 @@ class DataReceiver(QObject):
                 if msg["type"] not in ("pmessage", "message"):
                     continue
                 try:
-                    data = json.loads(msg.get("data"))
-                    self.message_received.emit(msg.get('pattern'), msg.get('channel'), data)
+                    # data = json.loads(msg.get("data"))
+                    # print(msg)
+                    self.message_received.emit(msg.get('pattern'), msg.get('channel').decode(), msg.get("data"))
                 except Exception as e:
                     print(f"[RedisSubscriber] error: {e}")
                     continue

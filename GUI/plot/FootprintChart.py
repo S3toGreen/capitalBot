@@ -4,16 +4,17 @@ import numpy as np
 import pandas as pd
 from redisworker.Receiver import DataReceiver
 from redisworker.AsyncWorker import AsyncWorker
+import msgpack
 
 pg.setConfigOptions(imageAxisOrder='row-major',
                     useOpenGL=False, antialias=False)
 
 class MinuteAxisItem(pg.AxisItem):
-    def __init__(self, ts, orientation='bottom', **kwargs):
+    def __init__(self, time, orientation='bottom', **kwargs):
         super().__init__(orientation, **kwargs)
         self.setStyle(showValues=True, autoExpandTextSpace=True, autoReduceTextSpace=True)
         self.enableAutoSIPrefix()
-        self.ts = ts.to_numpy()
+        self.time = time.to_numpy()
         self.tf = 1  # timeframe in minute
     def tickStrings(self, values, scale, spacing):
         """Formats the tick labels to show minutes"""
@@ -25,7 +26,10 @@ class MinuteAxisItem(pg.AxisItem):
         else:    # ≥ 1 minute
             fmt = "%H:%M"
 
-        return [self.ts[int(v)].strftime(fmt) if 0 <= int(v) < len(self.ts) else '' for v in values]
+        return [self.time[int(v)].strftime(fmt) if 0 <= int(v) < len(self.time) else '' for v in values]
+
+    def append_ts(self,ts):
+        self.time=np.append(self.time, pd.Timestamp(ts,unit='s',tz='Asia/Taipei'))
     
 class FixedScaleViewBox(pg.ViewBox):
     def __init__(self, *args, **kargs):
@@ -52,13 +56,13 @@ class FixedScaleViewBox(pg.ViewBox):
 class CandleStickItem(pg.GraphicsObject):
     def __init__(self, data, **kwargs):
         super().__init__()
-        self.data = data
-        print(data)
-        self.x_indices = self.data.index.to_numpy()
-        self.opens = self.data['open'].to_numpy()
-        self.highs = self.data['high'].to_numpy()
-        self.lows = self.data['low'].to_numpy()
-        self.closes = self.data['close'].to_numpy()
+        self.tdata = data[['open', 'high', 'low', 'close']].astype(float)
+
+        self.x_indices = self.tdata.index.to_numpy()
+        self.opens = self.tdata['open'].to_numpy()
+        self.highs = self.tdata['high'].to_numpy()
+        self.lows = self.tdata['low'].to_numpy()
+        self.closes = self.tdata['close'].to_numpy()
 
         self.pen_wick = pg.mkPen(color=(150, 150, 150)) # Neutral gray for all wicks
         self.pen_green = pg.mkPen('g')
@@ -162,93 +166,150 @@ class CandleStickItem(pg.GraphicsObject):
         # so pyqtgraph knows the item's total extent.
         if self.x_indices.size == 0:
             return QtCore.QRectF()
-        x_min = self.x_indices[0]
-        x_max = self.x_indices[-1]
-        y_min = self.lows.min()
-        y_max = self.highs.max()
+        x_min = self.x_indices[0]-1
+        x_max = self.x_indices[-1]+1
+        y_min = self.lows.min()-1
+        y_max = self.highs.max()+1
         return QtCore.QRectF(x_min, y_min, x_max - x_min, y_max - y_min)
     
-    def update_bar(self, idx, o,h,l,c):
-        self.opens[idx] = o
-        self.highs[idx] = h
-        self.lows[idx] = l
-        self.closes[idx] = c
+    def update_bar(self, o,h,l,c,append=False):
+        if append:
+            self.opens = np.append(self.opens, o/100)
+            self.highs = np.append(self.highs, h/100)
+            self.lows = np.append(self.lows, l/100)
+            self.closes = np.append(self.closes, c/100)
+            self.x_indices = np.append(self.x_indices, self.x_indices[-1]+1)
+            self.prepareGeometryChange()
+        else:
+            self.highs[-1] = h/100
+            self.lows[-1] = l/100
+            self.closes[-1] = c/100
         self.update() # Triggers a repaint of this item
-        pass
 
-class FootprintChart(pg.GraphicsLayoutWidget):
+class FootPrintItem(pg.GraphicsObject):
+    def __init__(self, data, *args):
+        super().__init__(*args)
+
+
+class MainChart(pg.PlotItem):
+    def __init__(self, data, parent=None, name=None, labels=None, title=None, enableMenu=True, **kargs):
+        self.xAxis = MinuteAxisItem(data['time'])
+        self.view = FixedScaleViewBox()
+        super().__init__(parent, name, labels, title, self.view, {'bottom':self.xAxis}, enableMenu, **kargs)
+        self.showGrid(x=True, y=True, alpha=0.3)
+        self.setLabel('left','Price')
+        #add candlestick
+        self.candle_item = CandleStickItem(data)
+        self.addItem(self.candle_item)
+        #add footprint
+        # self.fp_item = FootPrintItem(data)
+        # self.addItem(self.fp_item)
+
+        self.view.sigXRangeChanged.connect(self.update_y_range)
+        self.update_x_limits()
+    def update_y_range(self):
+        """This function is called when the user pans or zooms."""
+        x_min, x_max = self.view.viewRange()[0]
+        
+        # Convert float range to integer indices
+        start_idx = max(0, int(x_min))
+        end_idx = min(len(self.candle_item.x_indices), int(x_max) + 1)
+        
+        # # Slice the DataFrame to get only the visible data
+        visible_data = self.candle_item.x_indices[start_idx:end_idx]
+        
+        if not visible_data.size:
+            return # Do nothing if no data is visible
+            
+        # Find the min and max of the 'low' and 'high' columns for the visible data
+        y_min = self.candle_item.lows[start_idx:end_idx].min()
+        y_max = self.candle_item.highs[start_idx:end_idx].max()
+        
+        # Add some padding to the top and bottom
+        padding = (y_max - y_min) * 0.1
+        self.view.setYRange(y_min - padding, y_max + padding, padding=0)
+
+    def update_x_limits(self):
+        self.view.setLimits(xMax=len(self.xAxis.time)+6)
+
+    def update_data(self, data, append=False):
+        if append:
+            self.xAxis.append_ts(data['ts'])
+            self.update_x_limits()
+        self.candle_item.update_bar(data['o'],data['h'],data['l'],data['c'],append)
+        
+
+class Chart(pg.GraphicsLayout):
+    def __init__(self, data, parent=None, border=None):
+        super().__init__(parent, border)
+        self.last_bar_time= int(data['time'].iloc[-1].timestamp())
+        self.setSpacing(0)
+        self.setContentsMargins(0,0,0,0)
+        self.main = MainChart(data)
+        self.addItem(self.main,0,0)
+        self.main.sigXRangeChanged.connect(self.update_volume_range)
+
+        self.vol_plt = self.addPlot(1,0)
+        view = self.vol_plt.getViewBox()
+        view.setLimits(yMin=0)
+        view.enableAutoRange(y=True)
+        view.setAutoVisible(y=True)
+        view.setMouseEnabled(y=False)
+        self.vol_plt.setXLink(self.main)
+        self.vol_plt.setLabel('left', 'Volume')
+        self.vol_item = pg.BarGraphItem(x=data.index.to_numpy(),
+                                          height=data['vol'].to_numpy(),
+                                          width=0.8,brush=pg.mkBrush('lightgray'))
+        self.vol_plt.addItem(self.vol_item)
+
+        self.layout.setRowStretchFactor(0,3)
+        # update autoscroll flag
+        # x_range = self.view.viewRange()[0]
+        # self.auto_scroll = x_range[1] > (len(self.ohlcv) - 3)
+    def update_data(self, data):
+        if data['ts']!= self.last_bar_time:
+            # print(data['ts'],self.last_bar_time,"append")
+            self.last_bar_time=data['ts']
+            self.main.update_data(data,True)
+        else:
+            self.main.update_data(data) 
+    def update_volume_range(self):
+        # get currently visible X range in main chart
+        x_min, x_max = self.main.viewRange()[0]  # (xmin, xmax)
+        start_idx = max(0, int(x_min))
+        end_idx = min(len(self.vol_item.opts.get('x')), int(x_max) + 1)
+        # find indices within this range
+        visible_vol = self.vol_item.opts.get('height')[start_idx:end_idx]
+        # print(type(visible_vol))
+        if visible_vol.size:
+            y_max = visible_vol.max()
+            self.vol_plt.getViewBox().setYRange(0, y_max * 1.05, padding=0)
+            
+class PlotWidget(pg.GraphicsLayoutWidget):
     def __init__(self,ohlcv=None, parent=None, show=False, size=None, title=None, **kargs):
         super().__init__(parent, show, size, title, **kargs)
         self.worker = AsyncWorker()
         self.datareceiver = DataReceiver.create(self.worker,channels=['snap:DM:MTX00'])
-        self.datareceiver.message_received.connect(self.msg_handler)
+        self.datareceiver.message_received.connect(self._msg_handler)
 
-        self.ohlcv = ohlcv
         self.ci.layout.setSpacing(0)
         self.ci.setContentsMargins(0,0,0,0)
 
-        self.date_axis = MinuteAxisItem(self.ohlcv['time'])
-        self.price_plot = self.addPlot(row=0, col=0, axisItems={'bottom':self.date_axis}, viewBox=FixedScaleViewBox())
-        self.price_plot.showGrid(x=True, y=True, alpha=0.3)
-        self.price_plot.setLabel('left', 'Price')
+        self.MTX = Chart(ohlcv)
+        self.addItem(self.MTX,row=0,col=0)    
 
-        self.ohlcv[['open', 'high', 'low', 'close']] = self.ohlcv[['open', 'high', 'low', 'close']].astype(float)
-        self.candle_item = CandleStickItem(self.ohlcv)
-        self.price_plot.addItem(self.candle_item)
-        self.price_plot.getViewBox().sigXRangeChanged.connect(self.update_y_range)
-
-        self.volume_plot = self.addPlot(row=1, col=0)
-        self.volume_plot.setLabel('left', 'Volume')
-        self.volume_plot.setMaximumHeight(120)
-        self.volume_plot.setXLink(self.price_plot)  # Link x-axis with the main plot
-
-        self.volume_item = pg.BarGraphItem(x=self.ohlcv.index.to_numpy(),
-                                          height=self.ohlcv['vol'].to_numpy(),
-                                          width=0.8,brush=pg.mkBrush('lightgray'))
-        self.volume_plot.addItem(self.volume_item)
-        # Flag to control auto-scrolling
-        self.auto_scroll = True
-        # If user scrolls away, disable auto-scroll
-        self.update_x_limits()
-
-    def update_x_limits(self):
-        self.price_plot.getViewBox().setLimits(xMax=len(self.ohlcv)+6)
-
-    def update_y_range(self):
-        """This function is called when the user pans or zooms."""
-        vb = self.price_plot.getViewBox()
-        x_min, x_max = vb.viewRange()[0]
-        
-        # Convert float range to integer indices
-        start_idx = max(0, int(x_min))
-        end_idx = min(len(self.ohlcv), int(x_max) + 1)
-        
-        # Slice the DataFrame to get only the visible data
-        visible_data = self.ohlcv.iloc[start_idx:end_idx]
-        
-        if visible_data.empty:
-            return # Do nothing if no data is visible
-            
-        # Find the min and max of the 'low' and 'high' columns for the visible data
-        y_min = visible_data['low'].min()
-        y_max = visible_data['high'].max()
-        
-        # Add some padding to the top and bottom
-        padding = (y_max - y_min) * 0.1
-        vb.setYRange(y_min - padding, y_max + padding, padding=0)
-        
-        # update autoscroll flag
-        x_range = vb.viewRange()[0]
-        self.auto_scroll = x_range[1] > (len(self.ohlcv) - 3)
-
-    def msg_handler(self, pattern, channel, data):
+    @QtCore.Slot(str,str,bytes)
+    def _msg_handler(self, pattern, channel, data):
         """Handles incoming messages from Redis."""
         if not pattern:
             # not quote
-            # channel, market, symbol = channel.split(':')
+            channel, market, symbol = channel.split(':')
             # if channel == 'snap':
             #     ts= pd.Timestamp(data['time'])
-            print('channel:',data)
+            data = msgpack.unpackb(data, strict_map_key=False)
+            # print(symbol, data)
+            self.MTX.update_data(data)
         else:
-            print('pattern',data)
+            pass
+            # print('pattern',data)
     
