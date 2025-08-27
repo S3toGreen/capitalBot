@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from SignalManager import SignalManager
+import comtypes
 import comtypes.client as cc
 import comtypes.gen.SKCOMLib as sk
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -9,9 +10,9 @@ from redisworker.Producer import DataProducer
 from redisworker.AsyncWorker import AsyncWorker
 from collections import defaultdict
 from numba import njit
-import pythoncom
 import ctypes
 from quote.tools import Tick, Bar
+from rust_engine import register_sink
 
 @njit(cache=True, fastmath=True)
 def update_depth(dep, args):
@@ -100,6 +101,8 @@ class SKQuoteLibEvent(QObject):
             minute_changed = not bar_time_end or t.time >= bar_time_end
             last:Bar = None
             if minute_changed:
+                if bar_time_end:
+                    self.producer.pub_snap(symbol, self.orderflow[symbol][-1])
                 bar_time = t.time.replace(second=0)
                 bar_time_end = bar_time + pd.Timedelta(minutes=1)
                 self.producer.lastest_ptr[symbol] = t.ptr
@@ -163,14 +166,14 @@ class SKQuoteLibEvent(QObject):
     def OnNotifyServerTime(self, sHour, sMinute, sSecond, nTotal): 
         if sSecond or sMinute%30:
             return
-        if sHour==5 and sMinute:
+        if (sHour, sMinute)==(5, 30):
             self.signals.OS_reset.emit()
-            # reset stock ptr
+        elif (sHour, sMinute)==(8, 30):
             for symbol in self.ptr.keys():
                 if symbol.isdigit():
                     self.ptr[symbol] = 0
                     self.last_ptr[symbol] = 0
-        if sHour==14 and sMinute:
+        elif (sHour, sMinute)==(14, 30):
             if self.ptr:
                 self.ptr.clear()
                 self.last_ptr.clear()
@@ -300,17 +303,19 @@ class DomesticQuote(QObject):
         self.symlist = ['TX00', 'MTX00', '2330', '2454','2317','2308'] # this is for tick
 
     def run(self):
-        pythoncom.CoInitialize()
+        comtypes.CoInitialize()
         try:
             # self.skC = cc.CreateObject(sk.SKCenterLib, interface=sk.ISKCenterLib)
             # self.skC.SKCenterLib_LoginSetQuote(self.acc,self.passwd,'Y')
             self.async_worker = AsyncWorker()
-            self.skQ = cc.CreateObject(sk.SKQuoteLib,interface=sk.ISKQuoteLib)
+            self.skQ = cc.CreateObject(sk.SKQuoteLib, interface=sk.ISKQuoteLib)
             self.SKQuoteEvent = SKQuoteLibEvent(self.skC, self.skQ, self.async_worker)
+            ptr = int.from_bytes(self.skQ.value, byteorder="little", signed=False)
+            # register_sink(ptr)
             self.SKQuoteLibEventHandler = cc.GetEvents(self.skQ, self.SKQuoteEvent)
-            self.SKQuoteEvent.reconn.connect(self.conn_wrap)
         finally:
-            pythoncom.CoUninitialize()
+            comtypes.CoUninitialize()
+            self.SKQuoteEvent.reconn.connect(self.conn_wrap)
             self.timer = QTimer()
             self.timer.setInterval(1500)  # check every 1.5s
             self.timer.timeout.connect(self.check_connection_status)
@@ -355,7 +360,7 @@ class DomesticQuote(QObject):
             self.quoteDC()  
             msg = "Time Out! Failed to connect. Retry after 30s"
             self.signals.log_sig.emit(msg)
-            QTimer.singleShot(30000, self.quoteConnect)  # retry after 90s   
+            QTimer.singleShot(30000, self.quoteConnect)  # retry after 30s   
 
     def quoteDC(self):
         nCode = self.skQ.SKQuoteLib_LeaveMonitor()

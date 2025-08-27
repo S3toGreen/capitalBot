@@ -1,7 +1,7 @@
 from pandas import Timestamp
 from dataclasses import dataclass, field
 from collections import defaultdict
-
+import msgpack
 # from sortedcontainers import SortedDict
 # class DefaultSortedDict(SortedDict):
 #     def __init__(self, default_factory, *args, **kwargs):
@@ -33,8 +33,20 @@ class Bar:
             'v': self.vol,
             'vd': self.delta_hlc,
             'td': self.trades_delta,
-            'pm': {str(p):v for p,v in reversed(self.price_map.items())} # key as string is required
+            'pm': {str(p):v for p,v in self.price_map.items()} # key as string is required
         }
+    def to_bytes(self) -> bytes:
+        return msgpack.packb({
+            'ts': int(self.time.timestamp()),  # store as int for compactness self.time.isoformat(),#
+            'o': int(self.open*100),
+            'h': int(self.high*100),
+            'l': int(self.low*100),
+            'c': int(self.close*100),
+            'v': self.vol,
+            'vd': self.delta_hlc,
+            'td': self.trades_delta,
+            'pm': {int(p*100):v for p,v in self.price_map.items()}  # msgpack can handle dicts natively
+        }, use_bin_type=True)
     
 @dataclass(slots=True, frozen=True)
 class Tick:

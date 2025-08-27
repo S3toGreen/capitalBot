@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from SignalManager import SignalManager
+import comtypes
 import comtypes.client as cc
 import comtypes.gen.SKCOMLib as sk
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -8,9 +9,7 @@ import asyncio, datetime
 from redisworker.Producer import DataProducer
 from redisworker.AsyncWorker import AsyncWorker
 from collections import defaultdict
-# from sortedcontainers import SortedDict
 from numba import njit
-import pythoncom
 import ctypes
 from quote.tools import Bar, Tick
 
@@ -101,6 +100,8 @@ class SKOSQuoteLibEvent(QObject):
             minute_changed = not bar_time_end or t.time >= bar_time_end
             last:Bar = None
             if minute_changed:
+                if bar_time_end:
+                    self.producer.pub_snap(symbol, self.orderflow[symbol][-1])
                 bar_time = t.time.replace(second=0) #+ pd.Timedelta(minutes=1) # start of minute
                 bar_time_end = bar_time + pd.Timedelta(minutes=1)
                 self.producer.lastest_ptr[symbol] = t.ptr
@@ -258,17 +259,19 @@ class OverseaQuote(QObject):
         self.stocklist=['CME,NQ0000', 'CME,ES0000']
 
     def run(self):
-        pythoncom.CoInitialize()
+        comtypes.CoInitialize()
         try:
             # self.skC = cc.CreateObject(sk.SKCenterLib, interface=sk.ISKCenterLib)
             # self.skC.SKCenterLib_LoginSetQuote(self.acc,self.passwd,'Y')
             self.redis_worker = AsyncWorker()
             self.skOSQ = cc.CreateObject(sk.SKOSQuoteLib,interface=sk.ISKOSQuoteLib)
             self.SKOSQuoteEvent = SKOSQuoteLibEvent(self.skC, self.skOSQ, self.redis_worker)
+            ptr = int.from_bytes(self.skOSQ.value, byteorder='little', signed=False)
+
             self.SKOSQuoteLibEventHandler = cc.GetEvents(self.skOSQ, self.SKOSQuoteEvent)
-            self.SKOSQuoteEvent.reconn.connect(self.conn_wrap)
         finally:
-            pythoncom.CoUninitialize()
+            comtypes.CoUninitialize()
+            self.SKOSQuoteEvent.reconn.connect(self.conn_wrap)
             self.timer = QTimer()
             self.timer.setInterval(1500)  # check every 1.5s
             self.timer.timeout.connect(self.check_connection_status)
