@@ -303,15 +303,17 @@ class DomesticQuote(QObject):
         self.symlist = ['TX00', 'MTX00', '2330', '2454','2317','2308'] # this is for tick
 
     def run(self):
-        comtypes.CoInitialize()
+        comtypes.CoInitializeEx(comtypes.COINIT_APARTMENTTHREADED)
         try:
             # self.skC = cc.CreateObject(sk.SKCenterLib, interface=sk.ISKCenterLib)
             # self.skC.SKCenterLib_LoginSetQuote(self.acc,self.passwd,'Y')
             self.async_worker = AsyncWorker()
             self.skQ = cc.CreateObject(sk.SKQuoteLib, interface=sk.ISKQuoteLib)
             self.SKQuoteEvent = SKQuoteLibEvent(self.skC, self.skQ, self.async_worker)
-            ptr = int.from_bytes(self.skQ.value, byteorder="little", signed=False)
-            # register_sink(ptr)
+            ptr = ctypes.cast(self.skQ, ctypes.c_void_p).value
+            # print("python addr:", self.skQ, "rs:",ptr)
+
+            register_sink(ptr)
             self.SKQuoteLibEventHandler = cc.GetEvents(self.skQ, self.SKQuoteEvent)
         finally:
             comtypes.CoUninitialize()
