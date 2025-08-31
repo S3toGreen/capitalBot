@@ -37,7 +37,7 @@ pub unsafe fn advise_from_raw_iunknown(
 /// Formats the sum of two numbers as string.
 #[pyfunction]
 fn register_sink(raw_ptr: usize)->PyResult<()>{
-    log::info!("register_sink:{}", raw_ptr);
+    // log::info!("register_sink:{}", raw_ptr);
     println!("rust addr:{}", raw_ptr);
     unsafe {
         advise_from_raw_iunknown(raw_ptr).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Advise failed: {e:?}")))?
@@ -46,7 +46,7 @@ fn register_sink(raw_ptr: usize)->PyResult<()>{
 }
 #[pyfunction]
 fn unregister_sink()->PyResult<()>{
-    log::info!("unregister_sink called");
+    // log::info!("unregister_sink called");
     Ok(())
 }
 

@@ -2,7 +2,7 @@ from PySide6.QtWidgets import *
 from PySide6.QtCore import *
 from PySide6.QtGui import *
 from collections import defaultdict
-from SignalManager import SignalManager
+from core.SignalManager import SignalManager
 TABLE_VIEW_STYLE = """
 QTableView {
     alternate-background-color: #3c3c3c;

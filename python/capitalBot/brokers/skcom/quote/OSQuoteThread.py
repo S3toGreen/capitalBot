@@ -1,17 +1,17 @@
 import numpy as np
 import pandas as pd
-from SignalManager import SignalManager
+from core.SignalManager import SignalManager
 import comtypes
 import comtypes.client as cc
 import comtypes.gen.SKCOMLib as sk
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 import asyncio, datetime
-from redisworker.Producer import DataProducer
-from redisworker.AsyncWorker import AsyncWorker
+from core.redisworker.Producer import DataProducer
+from core.redisworker.AsyncWorker import AsyncWorker
 from collections import defaultdict
 from numba import njit
 import ctypes
-from quote.tools import Bar, Tick
+from .tools import Bar, Tick
 
 @njit(cache=True, fastmath=True)
 def update_depth(dep, args):

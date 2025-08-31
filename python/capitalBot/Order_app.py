@@ -1,6 +1,6 @@
 import sys
-from Broker import OrderBroker
-from SignalManager import SignalManager
+from brokers.skcom.Broker import OrderBroker
+from core.SignalManager import SignalManager
 from PySide6.QtWidgets import * #QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QFormLayout, QCheckBox, QPlainTextEdit
 from PySide6.QtCore import QThread, Slot
 from PySide6.QtGui import QColorConstants, QTextCharFormat, QFont, QTextCursor, QIcon, QAction

@@ -67,6 +67,7 @@ engine.start()
 * [ ] **WebGL\WebGPU Migration:** Take advantage of browser GPU framework, cross-platform.(FastAPI, websocket)
 * [ ] **Rust Migration:** Port hot‐path functions (`OnNotifyTicksLONG`, `_agg_tick`) to Rust for sub‐millisecond throughput while retaining Python bindings. simd, avx2
 * [ ] **Plugin System:** Allow community‐driven extensions for custom indicators and data sources.
+* [ ] **Shioaji compatible:** for better feature and limitation
 
 ### 🤝 Contributing
 

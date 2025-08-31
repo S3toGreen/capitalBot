@@ -8,3 +8,5 @@ CapitalLog
 *target/
 *.svg
 *.env
+dist
+jupyter_analytics

@@ -1,10 +1,10 @@
-from PySide6.QtCore import *
+from PySide6.QtCore import QObject, QThread, Slot
 import comtypes.client as cc
 # cc.GetModule(r'./x64/SKCOM.dll')
 import comtypes.gen.SKCOMLib as sk
-from SignalManager import SignalManager
-from quote.DMQuoteThread import DomesticQuote
-from quote.OSQuoteThread import OverseaQuote
+from core.SignalManager import SignalManager
+from .quote.DMQuoteThread import DomesticQuote
+from .quote.OSQuoteThread import OverseaQuote
 
 # Simulated trading or dry run
 # work flow send order to broker class  
@@ -144,10 +144,6 @@ class QuoteBroker(Broker):
         self.oversea_thread.finished.connect(self.oversea.stop)
 
     def init(self):
-        # self.worker = AsyncWorker()
-        # self.orderSub = DataReceiver.create(self.worker, ['order:*'])
-        # self.orderSub.message_received.connect(self._handle_order)
-
         self.domestic_thread.start()
         self.oversea_thread.start()
 
@@ -160,8 +156,8 @@ class QuoteBroker(Broker):
     
 class OrderBroker(Broker):
     # run a api service to handle order
-    from redisworker.AsyncWorker import AsyncWorker
-    from redisworker.Receiver import DataReceiver
+    from core.redisworker.AsyncWorker import AsyncWorker
+    from core.redisworker.Receiver import DataReceiver
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

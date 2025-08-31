@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtCore import Qt, Slot, Signal
-from DataCenter import DataCenter
+from core.DataCenter import DataCenter
 from GUI.watchlist import WatchList
 
 class TradingMainWindow(QMainWindow):

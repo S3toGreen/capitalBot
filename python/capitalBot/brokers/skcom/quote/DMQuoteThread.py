@@ -1,17 +1,17 @@
 import numpy as np
 import pandas as pd
-from SignalManager import SignalManager
+from core.SignalManager import SignalManager
 import comtypes
 import comtypes.client as cc
 import comtypes.gen.SKCOMLib as sk
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 import asyncio, datetime
-from redisworker.Producer import DataProducer
-from redisworker.AsyncWorker import AsyncWorker
+from core.redisworker.Producer import DataProducer
+from core.redisworker.AsyncWorker import AsyncWorker
 from collections import defaultdict
 from numba import njit
 import ctypes
-from quote.tools import Tick, Bar
+from .tools import Tick, Bar
 from rust_engine import register_sink
 
 @njit(cache=True, fastmath=True)
@@ -313,7 +313,7 @@ class DomesticQuote(QObject):
             ptr = ctypes.cast(self.skQ, ctypes.c_void_p).value
             # print("python addr:", self.skQ, "rs:",ptr)
 
-            register_sink(ptr)
+            # register_sink(ptr)
             self.SKQuoteLibEventHandler = cc.GetEvents(self.skQ, self.SKQuoteEvent)
         finally:
             comtypes.CoUninitialize()

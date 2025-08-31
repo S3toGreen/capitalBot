@@ -1,0 +1,18 @@
+[project]
+name = "python"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "clickhouse-connect>=0.8.18",
+    "comtypes>=1.4.11",
+    "msgspec>=0.19.0",
+    "numba>=0.61.2",
+    "numpy>=2.2.6",
+    "pandas>=2.3.2",
+    "pyqtgraph>=0.13.7",
+    "pyside6>=6.9.0",
+    "python-dotenv>=1.1.1",
+    "redis>=6.4.0",
+]

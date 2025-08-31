@@ -1,5 +1,5 @@
 from PySide6.QtCore import QThread, Signal
-from SignalManager import SignalManager
+from core.SignalManager import SignalManager
 
 class StrategyEngine(QThread):
     def __init__(self, /, parent = ...):
