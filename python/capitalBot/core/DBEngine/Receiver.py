@@ -1,4 +1,3 @@
-import json
 import asyncio
 from clickhouse_connect import get_async_client
 from .AsyncWorker import AsyncWorker
@@ -7,10 +6,10 @@ from redis.asyncio import Redis
 
 class DataReceiver(QObject):
     message_received = Signal(str,str,bytes)
-    def __init__(self, worker:AsyncWorker, redis:Redis, channels, patterns):
+    def __init__(self, worker:AsyncWorker, redis:Redis, channels=None, patterns=None):
         super().__init__()
-        self.async_worker = worker
         self.redis = redis
+        self.async_worker = worker
 
         self.channels = set(channels) if channels else set()
         self.patterns = set(patterns) if patterns else set()
@@ -28,7 +27,8 @@ class DataReceiver(QObject):
                 socket_connect_timeout=3,
                 socket_timeout=6,
                 socket_keepalive=True,
-                health_check_interval=30
+                health_check_interval=30,
+                max_connections=6
             )
         return cls(worker, redis, channels, patterns)
     

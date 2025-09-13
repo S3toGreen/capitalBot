@@ -3,9 +3,7 @@ from redisworker.Receiver import DataReceiver
 from clickhouse_connect import get_async_client
 from PySide6.QtCore import QObject, Slot, Signal
 from redisworker.AsyncWorker import AsyncWorker
-from dotenv import load_dotenv
 import os
-load_dotenv()
 
 class DataCenter(QObject):
     quote_sig = Signal(str,dict)
@@ -28,7 +26,7 @@ class DataCenter(QObject):
         return data_center
     @classmethod
     async def create_async(cls, worker, channels):
-        db = get_async_client(host='localhost',user='client',password=os.getenv('CLIENT_PASS'),compression=True)
+        db = get_async_client(host='localhost',user='default',password=os.getenv('CLIENT_PASS'),compression=True)
         recvr = DataReceiver.create_async(worker, channels)
         db, recvr = await asyncio.gather(db, recvr)
         return cls(worker,recvr,db)

@@ -26,7 +26,7 @@ class MainWindow(QMainWindow):
         self.signals.alert.connect(self.toast_alert)
 
         self.broker.moveToThread(self.broker_thread)
-        self.broker_thread.started.connect(self.broker.init)
+        self.broker_thread.started.connect(self.broker.start)
         self.broker_thread.finished.connect(self.broker.stop)
         # self.volprof = VolumeVisualize(self)
         # self.watchlist = WatchList(self)

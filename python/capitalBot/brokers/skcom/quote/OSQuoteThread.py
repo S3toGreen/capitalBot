@@ -6,8 +6,9 @@ import comtypes.client as cc
 import comtypes.gen.SKCOMLib as sk
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 import asyncio, datetime
-from core.redisworker.Producer import DataProducer
-from core.redisworker.AsyncWorker import AsyncWorker
+from core.DBEngine.Producer import DataProducer
+from core.DBEngine.Receiver import DataReceiver
+from core.DBEngine.AsyncWorker import AsyncWorker
 from collections import defaultdict
 from numba import njit
 import ctypes
@@ -81,7 +82,7 @@ class SKOSQuoteLibEvent(QObject):
 
         for symbol, ticks in self.tick_buffer.items():
             if not ticks: continue
-            self.producer.ticks_buf[symbol].extend(ticks)
+            # self.producer.ticks_buf[symbol].extend(ticks)
             self._agg_tick(symbol, ticks)
             ticks.clear()
 
@@ -93,15 +94,14 @@ class SKOSQuoteLibEvent(QObject):
         self._process_tick_buffer()
 
     def _agg_tick(self, symbol, ticks:list):
-        # TODO push the last bar EOD
         ticks.sort(key=lambda t:t.ptr)
         bar_time_end = (self.orderflow[symbol][-1].time+pd.Timedelta(minutes=1)) if self.orderflow[symbol] else None
         for t in ticks:
             minute_changed = not bar_time_end or t.time >= bar_time_end
             last:Bar = None
             if minute_changed:
-                if bar_time_end:
-                    self.producer.pub_snap(symbol, self.orderflow[symbol][-1])
+                # if bar_time_end:
+                #     self.producer.pub_snap(symbol, self.orderflow[symbol][-1])
                 bar_time = t.time.replace(second=0) #+ pd.Timedelta(minutes=1) # start of minute
                 bar_time_end = bar_time + pd.Timedelta(minutes=1)
                 self.producer.lastest_ptr[symbol] = t.ptr
@@ -130,11 +130,12 @@ class SKOSQuoteLibEvent(QObject):
                 last.delta_hlc[1]=last.delta_hlc[-1]
 
         self.last_ptr[symbol] = ticks[-1].ptr+1
+
+        self.producer.pub_snap(symbol, self.orderflow[symbol])
         if len(self.orderflow[symbol])>1:
             self.producer.push_bars(symbol, self.orderflow[symbol][:-1].copy())
-            self.orderflow[symbol]= [last]
+        self.orderflow[symbol]= [last]
         # snapshot?
-        self.producer.pub_snap(symbol, last)
 
     def _EOD(self):
         for symbol, bars in self.orderflow.items():
@@ -197,7 +198,7 @@ class SKOSQuoteLibEvent(QObject):
             elif nClose < mid_price:
                 side = -1
     
-        tick = Tick(ptr=nPtr, time=self._to_timestamp(nDate,nTime), side=side, price=nClose/100, qty=nQty)
+        tick = Tick(ptr=nPtr, time=self._to_timestamp(nDate,nTime), side=side, price=nClose, qty=nQty)
         # print(tick,f'bid:{bid},ask:{ask}',self.market_dep[symbol])
         self.producer.pub_ticks(symbol, tick)# print(symbol,tick)
         self.tick_buffer[symbol].append(tick)
@@ -213,7 +214,7 @@ class SKOSQuoteLibEvent(QObject):
         
         self.live_timer.stop()
         # self.backfill_symbols.add(symbol)
-        tick = Tick(ptr=nPtr, time=self._to_timestamp(nDate,nTime), side=0, price=nClose/100, qty=nQty)
+        tick = Tick(ptr=nPtr, time=self._to_timestamp(nDate,nTime), side=0, price=nClose, qty=nQty)
         self.tick_buffer[symbol].append(tick)
         self.backfill_timer.start()
     
@@ -258,6 +259,7 @@ class OverseaQuote(QObject):
         self.signals = SignalManager.get_instance()
         self.stocklist=['CME,NQ0000', 'CME,ES0000']
 
+    @Slot()
     def run(self):
         comtypes.CoInitialize()
         try:
@@ -267,11 +269,9 @@ class OverseaQuote(QObject):
             self.skOSQ = cc.CreateObject(sk.SKOSQuoteLib,interface=sk.ISKOSQuoteLib)
             self.SKOSQuoteEvent = SKOSQuoteLibEvent(self.skC, self.skOSQ, self.redis_worker)
             ptr = int.from_bytes(self.skOSQ.value, byteorder='little', signed=False)
-
+            self.SKOSQuoteEvent.reconn.connect(self.conn_wrap)
             self.SKOSQuoteLibEventHandler = cc.GetEvents(self.skOSQ, self.SKOSQuoteEvent)
         finally:
-            comtypes.CoUninitialize()
-            self.SKOSQuoteEvent.reconn.connect(self.conn_wrap)
             self.timer = QTimer()
             self.timer.setInterval(1500)  # check every 1.5s
             self.timer.timeout.connect(self.check_connection_status)
@@ -342,7 +342,9 @@ class OverseaQuote(QObject):
             self.signals.log_sig.emit(msg)
             pg=psPageNo+1
 
+    @Slot()
     def stop(self):
+        comtypes.CoUninitialize()
         if hasattr(self,'SKOSQuoteEvent'):
             self.SKOSQuoteEvent.cleanup()
             self.redis_worker.stop()

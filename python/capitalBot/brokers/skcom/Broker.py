@@ -2,9 +2,13 @@ from PySide6.QtCore import QObject, QThread, Slot
 import comtypes.client as cc
 # cc.GetModule(r'./x64/SKCOM.dll')
 import comtypes.gen.SKCOMLib as sk
+import comtypes
 from core.SignalManager import SignalManager
 from .quote.DMQuoteThread import DomesticQuote
 from .quote.OSQuoteThread import OverseaQuote
+from core.DBEngine.AsyncWorker import AsyncWorker
+from core.DBEngine.Receiver import DataReceiver
+import asyncio
 
 # Simulated trading or dry run
 # work flow send order to broker class  
@@ -129,6 +133,10 @@ class Broker(QObject):
 
 
 class QuoteBroker(Broker):
+    """
+    TODO: dynamic add symbol for intraday only (no store)
+    request tick,quote,klines than plot
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -143,9 +151,12 @@ class QuoteBroker(Broker):
         self.domestic_thread.finished.connect(self.domestic.stop)
         self.oversea_thread.finished.connect(self.oversea.stop)
 
-    def init(self):
+    def start(self):
         self.domestic_thread.start()
         self.oversea_thread.start()
+        self.async_worker = AsyncWorker()
+        self.data_receiver = DataReceiver.create(self.async_worker,['request:DM'])
+        self.data_receiver.message_received.connect(self.request_ticker)
 
     def stop(self):
         self.oversea_thread.quit()
@@ -153,24 +164,23 @@ class QuoteBroker(Broker):
         self.domestic_thread.wait()
         self.oversea_thread.wait()
         return
+    @Slot(str,str,bytes)
+    def request_ticker(self, pattern, channel, data):
+        #fetch candlestick, subscribe quote, tick
+        print(data)
     
 class OrderBroker(Broker):
     # run a api service to handle order
-    from core.redisworker.AsyncWorker import AsyncWorker
-    from core.redisworker.Receiver import DataReceiver
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.skO = cc.CreateObject(sk.SKOrderLib,interface=sk.ISKOrderLib)
         SKOrderEvent = SKOrderLibEvent(self.skC)
         self.SKOrderLibEventHandler = cc.GetEvents(self.skO, SKOrderEvent)
-
-    def init(self):
+    def start(self):
         self.skR.SKReplyLib_ConnectByID(self.ID)
         self.order_init()
-
-        self.worker = self.AsyncWorker()
-        self.orderSub = self.DataReceiver.create(self.worker, ['order:*'])
+        self.async_worker = AsyncWorker()
+        self.orderSub = DataReceiver.create(self.async_worker, ['order:*'])
         self.orderSub.message_received.connect(self._handle_order)
 
     def order_init(self):
@@ -218,11 +228,16 @@ class OrderBroker(Broker):
     def _handle_order(self, pattern, channel, data):
         # so far it only subscribe order channel
         print('Order command:', data)
-        # self.processOrder(data)
+        self.processOrder(data)
 
-    def stop(self):   
+    def processOrder(self,*args):
+        # modify or delete order
+        self.skO.SendFutureProxyAlter(...)
+        # place new order
+        self.skO.SendFutureProxyOrderCLR(...)
+
+    def stop(self):
         if hasattr(self, 'orderSub'):
             self.orderSub.stop()
-            self.worker.stop()              
 
         return

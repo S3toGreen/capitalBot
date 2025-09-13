@@ -5,7 +5,7 @@ from PySide6.QtWidgets import * #QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
 from PySide6.QtCore import QThread, Slot
 from PySide6.QtGui import QColorConstants, QTextCharFormat, QFont, QTextCursor, QIcon, QAction
 # import redisworker.Config as Config
-from windows_toasts import WindowsToaster, Toast, ToastScenario
+# from windows_toasts import WindowsToaster, Toast, ToastScenario
 from dotenv import load_dotenv
 import os
 load_dotenv()
@@ -26,12 +26,12 @@ class MainWindow(QMainWindow):
         self.signals.alert.connect(self.toast_alert)
 
         self.broker.moveToThread(self.broker_thread)
-        self.broker_thread.started.connect(self.broker.init)
+        self.broker_thread.started.connect(self.broker.start)
         self.broker_thread.finished.connect(self.broker.stop)
         # self.volprof = VolumeVisualize(self)
         # self.watchlist = WatchList(self)
-        self.toaster=WindowsToaster('Order_App')
-        self.newToast = Toast(scenario=ToastScenario.Reminder,suppress_popup=False)
+        # self.toaster=WindowsToaster('Order_App')
+        # self.newToast = Toast(scenario=ToastScenario.Reminder,suppress_popup=False)
 
     def init_ui(self):
         self.resize(600,600)

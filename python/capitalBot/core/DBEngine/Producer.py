@@ -1,16 +1,13 @@
 import json, asyncio
 import pandas as pd
 from collections import defaultdict
-# from quote.tools import Bar, Tick
-# from AsyncWorker import AsyncWorker
 from clickhouse_connect import get_async_client
+from clickhouse_connect.driver.asyncclient import AsyncClient
 from clickhouse_connect.driver.exceptions import ClickHouseError
-# from .Config import passwd
-from dotenv import load_dotenv
 import os
-load_dotenv()
 from redis.asyncio import Redis
 from itertools import dropwhile
+import msgspec
 
 class DataProducer:
     def __init__(self, market, worker, db, redis:Redis):
@@ -18,14 +15,13 @@ class DataProducer:
         self.async_worker = worker
         self.market = market # OS,DM
         self.lastest_ptr = defaultdict(int)
-        self.ticks_buf=defaultdict(list)
+        self.ticks_buf = defaultdict(list)
         self.lastest_bar = {}
-        # self.bars_buf=[]
         self.db = db
 
     @classmethod
     def create(cls, market, worker):
-        return asyncio.run_coroutine_threadsafe(cls.create_async(market,worker), worker.loop).result()
+        return asyncio.run_coroutine_threadsafe(cls.create_async(market,worker), worker.loop).result(3)
     @classmethod
     async def create_async(cls, market, worker):
         db = await get_async_client(host='localhost',user='admin',password=os.getenv('BROKER_PASS'),compression=True)
@@ -33,16 +29,17 @@ class DataProducer:
                 socket_connect_timeout=3,
                 socket_timeout=6,
                 socket_keepalive=True,
-                health_check_interval=30
+                health_check_interval=30,
+                max_connections=30
             )
         return cls(market,worker,db,redis)
 
-    def pub_snap(self, symbol,bar):
-        self.async_worker.submit(self.pub_snap_async(symbol, bar))    
-    async def pub_snap_async(self, symbol, bar):
+    def pub_snap(self, symbol,bars:list):
+        self.async_worker.submit(self.pub_snap_async(symbol, bars))    
+    async def pub_snap_async(self, symbol, bars:list):
         channel = f'snap:{self.market}:{symbol}'
-        # print(f"{channel}", bar.to_json())
-        await self.redis.publish(channel, bar.to_bytes())
+        payload = [ bar.to_dict() for bar in bars] 
+        await self.redis.publish(channel, msgspec.msgpack.encode(payload))
     
     def pub_quote(self, data):
         self.async_worker.submit(self.pub_quote_async(data))
@@ -53,7 +50,7 @@ class DataProducer:
 
     def push_bars(self, symbol, bars:list):
         self.async_worker.submit(self.push_bars_async(symbol, bars))
-        del bars
+
     async def push_bars_async(self, symbol, bars:list):
         # push to ohlcv and fp separately
         m_type = 1 if self.market=='OS' else 2
@@ -65,12 +62,11 @@ class DataProducer:
         new_bars = dropwhile(lambda b: b.time <= self.lastest_bar[symbol], bars)
 
         rows = [(
-            m_type, bar.time, symbol, bar.open, bar.high, bar.low, bar.close, bar.vol,
+            m_type, bar.time.tz_localize(), symbol, bar.open/100, bar.high/100, bar.low/100, bar.close/100, bar.vol,
             bar.delta_hlc[0], bar.delta_hlc[1], bar.delta_hlc[2], bar.trades_delta,
-            [(p, v[0], v[1], v[2]) for p,v in bar.price_map.items()]
+            [(p/100, v[0], v[1], v[2]) for p,v in bar.price_map.items()]
             ) for bar in new_bars
         ]
-
         try:
             if rows:
                 await self.db.insert(f'bar_pipe', rows)

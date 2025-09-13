@@ -14,10 +14,10 @@ import msgspec
 @dataclass(slots=True)
 class Bar:
     time: Timestamp
-    open: float
-    high: float
-    low: float
-    close: float
+    open: int
+    high: int
+    low: int
+    close: int
     vol: int
     delta_hlc: list = field(default_factory=lambda: [0, 0, 0])
     trades_delta: int = 0
@@ -25,34 +25,22 @@ class Bar:
 
     def to_dict(self):
         return {
-            'ts': self.time.isoformat(),
-            'o': self.open,
-            'h': self.high,
-            'l': self.low,
-            'c': self.close,
-            'v': self.vol,
-            'vd': self.delta_hlc,
-            'td': self.trades_delta,
-            'pm': {str(p):v for p,v in self.price_map.items()} # key as string is required
+            "ts": int(self.time.timestamp()),
+            "o": self.open,
+            "h": self.high,
+            "l": self.low,
+            "c": self.close,
+            "v": self.vol,
+            "vd": self.delta_hlc,
+            "td": self.trades_delta,
+            "pm": self.price_map
         }
-    def to_bytes(self) -> bytes:
-        return msgspec.msgpack.encode({
-            'ts': int(self.time.timestamp()),  # store as int for compactness self.time.isoformat(),#
-            'o': int(self.open*100),
-            'h': int(self.high*100),
-            'l': int(self.low*100),
-            'c': int(self.close*100),
-            'v': self.vol,
-            'vd': self.delta_hlc,
-            'td': self.trades_delta,
-            'pm': {int(p*100):v for p,v in self.price_map.items()}  # msgpack can handle dicts natively
-        })
     
 @dataclass(slots=True, frozen=True)
 class Tick:
     ptr: int
     time: Timestamp
-    price: float
+    price: int # with scale
     side: int
     qty: int
     
