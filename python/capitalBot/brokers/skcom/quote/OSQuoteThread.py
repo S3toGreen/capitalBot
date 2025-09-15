@@ -64,7 +64,7 @@ class SKOSQuoteLibEvent(QObject):
     def _to_timestamp(self, nDate, nTime):
         if nDate != self._cached_date:
             self._cached_date = nDate
-            self._cached_today_dt = pd.to_datetime(str(nDate), format='%Y%m%d').tz_localize(self._tz)
+            self._cached_today_dt = pd.Timestamp(str(nDate), tz=self._tz)
         hour = nTime // 10000
         minute = (nTime // 100) % 100
         sec = nTime%100

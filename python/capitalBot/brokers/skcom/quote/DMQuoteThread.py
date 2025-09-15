@@ -62,7 +62,7 @@ class SKQuoteLibEvent(QObject):
         # Cache for date objects to avoid expensive parsing on every tick.
         self._cached_date = 0
         self._cached_today_dt = None
-        self._tz = 60*60*8 #'Asia/Taipei'
+        self._tz = 'Asia/Taipei'
 
     def _to_timestamp(self, nDate, nTime):
         if nDate != self._cached_date:

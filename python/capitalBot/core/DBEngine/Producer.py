@@ -62,11 +62,13 @@ class DataProducer:
         new_bars = dropwhile(lambda b: b.time <= self.lastest_bar[symbol], bars)
 
         rows = [(
-            m_type, bar.time.tz_localize(), symbol, bar.open/100, bar.high/100, bar.low/100, bar.close/100, bar.vol,
+            m_type, bar.time, symbol, bar.open/100, bar.high/100, bar.low/100, bar.close/100, bar.vol,
             bar.delta_hlc[0], bar.delta_hlc[1], bar.delta_hlc[2], bar.trades_delta,
             [(p/100, v[0], v[1], v[2]) for p,v in bar.price_map.items()]
             ) for bar in new_bars
         ]
+        # print(rows)
+        # return
         try:
             if rows:
                 await self.db.insert(f'bar_pipe', rows)
