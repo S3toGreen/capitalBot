@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
 from core.SignalManager import SignalManager
 import comtypes
 import comtypes.client as cc
@@ -12,7 +11,10 @@ from core.DBEngine.AsyncWorker import AsyncWorker
 from collections import defaultdict
 from numba import njit
 import ctypes
-from .tools import Bar, Tick
+from core.tools import Bar, Tick
+from zoneinfo import ZoneInfo
+
+QTY_THRESH=15
 
 @njit(cache=True, fastmath=True)
 def update_depth(dep, args):
@@ -41,30 +43,29 @@ class SKOSQuoteLibEvent(QObject):
         self.market_dep = defaultdict(lambda: np.zeros((2,10),dtype=[('p', 'f4'), ('q', 'u2')]))
 
         # Debounce timer
-        self.backfill_timer = QTimer(self)
-        self.backfill_timer.setSingleShot(True)
+        self.backfill_timer = QTimer(self,singleShot=True)
         self.backfill_timer.setInterval(3000)
         self.backfill_timer.timeout.connect(self._finalize_backfill)
         # self.backfill_symbols = set()
         self.live_timer = QTimer(self)
-        self.live_timer.setInterval(300)
+        self.live_timer.setInterval(150)
         self.live_timer.timeout.connect(self._live_tick)
 
         #EOD detect
         self.idle_timer = QTimer(singleShot=True)
-        self.idle_timer.setInterval(600000)
+        self.idle_timer.setInterval(720000)
         self.idle_timer.timeout.connect(self._EOD)
         self.idle_timer.start()
 
         # Cache for date objects to avoid expensive parsing on every tick.
         self._cached_date = 0
         self._cached_today_dt = None
-        self._tz = 'America/Chicago'
+        self._tz = ZoneInfo('America/Chicago')
 
     def _to_timestamp(self, nDate, nTime):
         if nDate != self._cached_date:
             self._cached_date = nDate
-            self._cached_today_dt = pd.Timestamp(str(nDate), tz=self._tz)
+            self._cached_today_dt = pd.Timestamp(str(nDate), tzinfo=self._tz)
         hour = nTime // 10000
         minute = (nTime // 100) % 100
         sec = nTime%100
@@ -73,16 +74,10 @@ class SKOSQuoteLibEvent(QObject):
     def _process_tick_buffer(self):
         if not self.tick_buffer:
             return
-        
-        # tmp_buf = {
-        #     symbol: ticks.copy()
-        #     for symbol, ticks in self.tick_buffer.items() if ticks
-        # }
-        # self.producer.insert_ticks(tmp_buf)
+        self.producer.insert_ticks()        
 
         for symbol, ticks in self.tick_buffer.items():
             if not ticks: continue
-            # self.producer.ticks_buf[symbol].extend(ticks)
             self._agg_tick(symbol, ticks)
             ticks.clear()
 
@@ -102,7 +97,7 @@ class SKOSQuoteLibEvent(QObject):
             if minute_changed:
                 # if bar_time_end:
                 #     self.producer.pub_snap(symbol, self.orderflow[symbol][-1])
-                bar_time = t.time.replace(second=0) #+ pd.Timedelta(minutes=1) # start of minute
+                bar_time = t.time.replace(second=0) # start of minute
                 bar_time_end = bar_time + pd.Timedelta(minutes=1)
                 self.producer.lastest_ptr[symbol] = t.ptr
                 tmp = Bar(bar_time, t.price, t.price, t.price, t.price, t.qty)
@@ -117,8 +112,6 @@ class SKOSQuoteLibEvent(QObject):
                 last.close=t.price
                 last.vol+=t.qty
 
-            # last.price_map[t.price][0] += t.qty
-
             last.delta_hlc[-1] += t.qty*t.side #close delta
             last.trades_delta += t.side
             # if t.side: # 1 aggb, -1 aggs, 0 neutral 
@@ -131,24 +124,22 @@ class SKOSQuoteLibEvent(QObject):
 
         self.last_ptr[symbol] = ticks[-1].ptr+1
 
-        self.producer.pub_snap(symbol, self.orderflow[symbol])
+        self.producer.set_snap(symbol, self.orderflow[symbol])
         if len(self.orderflow[symbol])>1:
-            self.producer.push_bars(symbol, self.orderflow[symbol][:-1].copy())
+            self.producer.push_bars(symbol, self.orderflow[symbol][:-1])
         self.orderflow[symbol]= [last]
         # snapshot?
 
     def _EOD(self):
+        print("------OS MARKET CLOSED------")
         for symbol, bars in self.orderflow.items():
             if bars:
                 self.producer.lastest_ptr[symbol] = self.last_ptr[symbol]
                 self.producer.push_bars(symbol, bars)
         self.orderflow.clear()
         self.live_timer.stop()
-        self.producer.insert_ticks()
-        print("------OS MARKET CLOSED------")
 
     def fetch_ptr(self, stocklist:list[str]):
-        # if not self.ptr:
         keys = [i.split(',')[1] for i in stocklist]
         self.ptr = self.producer.get_ptr(keys)
 
@@ -165,14 +156,13 @@ class SKOSQuoteLibEvent(QObject):
 
     @Slot()
     def reset_ptr(self):
+        if self.orderflow:
+            print(f'ERROR orderflow data not pushed.\n{self.orderflow}')
+            self._EOD()
         if self.ptr:
             self.ptr.clear()
             self.last_ptr.clear()
-            self.producer.insert_ticks()
-            if self.orderflow:
-                print(f'ERROR orderflow data not pushed.\n{self.orderflow}')
-            else:
-                print('Reset OS data')
+            print('Reset OS data')
 
     def OnNotifyTicksNineDigitLONG(self, nIndex, nPtr, nDate, nTime, nClose, nQty):
         # store orderflow of NY session only (open at 8:31~15:00) (TODO store also huge volume)
@@ -199,8 +189,9 @@ class SKOSQuoteLibEvent(QObject):
                 side = -1
     
         tick = Tick(ptr=nPtr, time=self._to_timestamp(nDate,nTime), side=side, price=nClose, qty=nQty)
-        # print(tick,f'bid:{bid},ask:{ask}',self.market_dep[symbol])
-        self.producer.pub_ticks(symbol, tick)# print(symbol,tick)
+        if nQty>=QTY_THRESH:
+            self.producer.pub_tick(symbol, tick)
+            self.producer.big_trade_buf[symbol].append(tick)
         self.tick_buffer[symbol].append(tick)
 
     def OnNotifyHistoryTicksNineDigitLONG(self, nIndex, nPtr, nDate, nTime, nClose, nQty):
@@ -224,18 +215,19 @@ class SKOSQuoteLibEvent(QObject):
             pSKStock, nCode = self.skOSQ.SKOSQuoteLib_GetStockByIndexLONG(nStockidx, pSKStock)
             self.stockid[nStockidx] = symbol = pSKStock.bstrStockNo
         update_depth(self.market_dep[symbol],args)
+        self.producer.pub_depth(symbol, self.market_dep[symbol])
 
     def OnNotifyQuoteLONG(self, nIndex):
         pSKStock = sk.SKFOREIGNLONG()
         pSKStock, nCode = self.skOSQ.SKOSQuoteLib_GetStockByIndexLONG(nIndex, pSKStock)
         self.stockid[nIndex] = pSKStock.bstrStockNo
-        data={'Symbol':pSKStock.bstrStockName,
-            'C':pSKStock.nClose/(10**pSKStock.sDecimal),
-            'O':pSKStock.nOpen/(10**pSKStock.sDecimal),
-            'H':pSKStock.nHigh/(10**pSKStock.sDecimal),
-            'L':pSKStock.nLow/(10**pSKStock.sDecimal),
-            'Vol':pSKStock.nTQty,'Ref':pSKStock.nRef/(10**pSKStock.sDecimal),'ID':pSKStock.bstrStockNo}
-        self.producer.pub_quote(data)
+        scale = pSKStock.sDecimal
+        data={'C':pSKStock.nClose,
+            'O':pSKStock.nOpen,
+            'H':pSKStock.nHigh,
+            'L':pSKStock.nLow,
+            'Vol':pSKStock.nTQty,'Ref':pSKStock.nRef,'ID':pSKStock.bstrStockNo}
+        self.producer.pub_quote(pSKStock.bstrStockNo,data)
 
     def OnOverseaProducts(self, bstrValue):
         if bstrValue.split(',')[0]!='CME':
@@ -243,13 +235,9 @@ class SKOSQuoteLibEvent(QObject):
         msg = "【OnOverseaProducts】" + str(bstrValue)
         print(msg)
     def cleanup(self):
-        if self.backfill_timer.isActive():
-            self.backfill_timer.stop()
-        if self.live_timer.isActive():
-            self.live_timer.stop()
-        if self.idle_timer.isActive():
-            self.idle_timer.stop()
-        self.producer.insert_ticks()
+        self.backfill_timer.stop()
+        self.live_timer.stop()
+        self.idle_timer.stop()
 
 class OverseaQuote(QObject):
     def __init__(self,skC):

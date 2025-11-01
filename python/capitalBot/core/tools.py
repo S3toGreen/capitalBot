@@ -1,7 +1,7 @@
-from pandas import Timestamp
 from dataclasses import dataclass, field
 from collections import defaultdict
-import msgspec
+from msgspec import msgpack
+from datetime import datetime
 # from sortedcontainers import SortedDict
 # class DefaultSortedDict(SortedDict):
 #     def __init__(self, default_factory, *args, **kwargs):
@@ -13,7 +13,7 @@ import msgspec
     
 @dataclass(slots=True)
 class Bar:
-    time: Timestamp
+    time: datetime
     open: int
     high: int
     low: int
@@ -25,7 +25,7 @@ class Bar:
 
     def to_dict(self):
         return {
-            "ts": int(self.time.timestamp()),
+            "ts": self.time.isoformat(),
             "o": self.open,
             "h": self.high,
             "l": self.low,
@@ -39,15 +39,18 @@ class Bar:
 @dataclass(slots=True, frozen=True)
 class Tick:
     ptr: int
-    time: Timestamp
+    time: int
     price: int # with scale
     side: int
     qty: int
     
+    def pack(self)->bytes:
+        return msgpack.encode({"ptr":self.ptr, "ts":self.time, "p":self.price, "s":self.side, "q":self.qty})
+
     def to_dict(self):
         return {
             'ptr': self.ptr,
-            'ts': self.time.isoformat(),
+            'ts': datetime.fromtimestamp(self.time / 1_000_000.0).isoformat(), #to local tz
             'p': self.price,
             's': self.side,
             'q': self.qty

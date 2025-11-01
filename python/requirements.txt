@@ -1,0 +1,10 @@
+pyside6
+qasync
+comtypes
+clickhouse-connect
+msgspec
+numba
+numpy
+redis
+shioaji[speed]
+python-dotenv

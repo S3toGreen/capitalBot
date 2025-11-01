@@ -5,9 +5,11 @@ class SignalManager(QObject):
     data_sig = Signal(str, int)
     option_update= Signal(list)
     OS_reset = Signal()
-    alert = Signal(str,str)
+    DM_reset = Signal()
     restart_dm = Signal()
     restart_os = Signal()
+    login_success = Signal(object)
+    shutdown = Signal()
     _instance = None
     
     @staticmethod

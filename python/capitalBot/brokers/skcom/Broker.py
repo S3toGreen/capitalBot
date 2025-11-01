@@ -8,19 +8,15 @@ from .quote.DMQuoteThread import DomesticQuote
 from .quote.OSQuoteThread import OverseaQuote
 from core.DBEngine.AsyncWorker import AsyncWorker
 from core.DBEngine.Receiver import DataReceiver
-import asyncio
 
 # Simulated trading or dry run
 # work flow send order to broker class  
-acclist = {}
-accinfo = [] # future right info
-position = []
 
 class SKReplyLibEvent():
     def __init__(self, skC):
         super().__init__()
         self.singals = SignalManager.get_instance()
-        self.skC=skC
+        self.skC = skC
         self.status = -1
 
     def OnReplyMessage(self, bstrUserID, bstrMessages):
@@ -42,9 +38,22 @@ class SKReplyLibEvent():
         print(msg)
 
 class SKCenterLibEvent():
+    def __init__(self):
+        self.signals = SignalManager.get_instance()
     def OnShowAgreement(self, bstrData):
         msg = "【OnShowAgreement】" + bstrData
-
+    def OnTimer(self, nTime):
+        # potential bug here: if disconnect it never reset
+        # fix: fetch ptr again if reconnect
+        hour = nTime//10000
+        minute = (nTime//100)%100
+        if (hour, minute)==(5, 30):
+            self.signals.OS_reset.emit()
+        elif (hour, minute)==(14, 45): 
+            self.signals.DM_reset.emit()
+        elif (hour, minute)==(8, 30):
+            pass# reset stock ptr
+        
 class SKOrderLibEvent():
     def __init__(self, skC) -> None:
         super().__init__()
@@ -93,18 +102,17 @@ class SKOrderLibEvent():
 class Broker(QObject): 
     def __init__(self, *args,**kwargs):
         super().__init__()
+        self.signals = SignalManager.get_instance()
+
         self.skC = cc.CreateObject(sk.SKCenterLib,interface=sk.ISKCenterLib)
         SKCenterEvent = SKCenterLibEvent()
         self.SKCenterLibEventHandler = cc.GetEvents(self.skC, SKCenterEvent)
 
         self.skR = cc.CreateObject(sk.SKReplyLib,interface=sk.ISKReplyLib)
-        self.SKReplyEvent = SKReplyLibEvent(self.skC)
-        self.SKReplyLibEventHandler = cc.GetEvents(self.skR, self.SKReplyEvent)
-
-        self.signals = SignalManager.get_instance()
+        SKReplyEvent = SKReplyLibEvent(self.skC)
+        self.SKReplyLibEventHandler = cc.GetEvents(self.skR, SKReplyEvent)
 
         nCode = self.skC.SKCenterLib_SetLogPath("CapitalLog")
-
         if nCode:
             msg = "【SetLogPath】" + self.skC.SKCenterLib_GetReturnCodeMessage(nCode)
             self.signals.log_sig.emit(msg)
@@ -120,8 +128,6 @@ class Broker(QObject):
         if nCode==0:
             self.ID = acc
         self.signals.log_sig.emit(msg)
-        # self.domestic.acc = self.oversea.acc = acc
-        # self.domestic.passwd = self.oversea.passwd = passwd
 
         return nCode
 
@@ -140,23 +146,20 @@ class QuoteBroker(Broker):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.domestic_thread = QThread()
-        self.oversea_thread = QThread()
-        self.domestic = DomesticQuote(self.skC)
-        self.oversea = OverseaQuote(self.skC)
-        self.domestic.moveToThread(self.domestic_thread)
-        self.oversea.moveToThread(self.oversea_thread)
-        self.domestic_thread.started.connect(self.domestic.run)
-        self.oversea_thread.started.connect(self.oversea.run)
-        self.domestic_thread.finished.connect(self.domestic.stop)
-        self.oversea_thread.finished.connect(self.oversea.stop)
+        # self.domestic_thread = QThread()
+        # self.oversea_thread = QThread()
+        # self.domestic = DomesticQuote(self.skC)
+        # self.oversea = OverseaQuote(self.skC)
+        # self.domestic.moveToThread(self.domestic_thread)
+        # self.oversea.moveToThread(self.oversea_thread)
+        # self.domestic_thread.started.connect(self.domestic.run)
+        # self.oversea_thread.started.connect(self.oversea.run)
+        # self.domestic_thread.finished.connect(self.domestic.stop)
+        # self.oversea_thread.finished.connect(self.oversea.stop)
 
     def start(self):
         self.domestic_thread.start()
         self.oversea_thread.start()
-        self.async_worker = AsyncWorker()
-        self.data_receiver = DataReceiver.create(self.async_worker,['request:DM'])
-        self.data_receiver.message_received.connect(self.request_ticker)
 
     def stop(self):
         self.oversea_thread.quit()
